@@ -158,9 +158,9 @@ export async function GET() {
         ? "RingCentral returned active-call rows but all were filtered (e.g. ended status). If this persists during a live call, share a redacted API sample."
         : null;
 
-  // Merged calls are empty only when webhook summaries and extension poll both yield none.
-  // Do not set dockExtensionPollRateLimited here: extension may be rate-limited with an empty
-  // body while TelephonyLiveSession already shows no live rows — webhooks are authoritative for idle.
+  // Merged calls are empty when webhook + extension poll yield none. If every extension leg was
+  // rate-limited, fetch returns empty with dockExtensionPollRateLimited — the client must keep
+  // the last snapshot when it still has cards (same payload shape as true idle otherwise).
   return jsonPrivate({
     ok: true,
     configured: true,
@@ -171,6 +171,7 @@ export async function GET() {
     extensionApiRecordCount,
     extensionSkippedEnded,
     extensionPollTarget,
+    ...(dockExtensionPollRateLimited ? { dockExtensionPollRateLimited: true as const } : {}),
     ...(emptyHint ? { dockEmptyHint: emptyHint } : {}),
   });
 }

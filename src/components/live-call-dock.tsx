@@ -165,14 +165,17 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
       }
 
       const next = Array.isArray(data.calls) ? data.calls : [];
-      const extensionPollUnknown =
+      const extensionPollRateLimitedEmpty =
         data.dockExtensionPollRateLimited === true && next.length === 0;
-
-      if (extensionPollUnknown) {
+      if (extensionPollRateLimitedEmpty) {
         pollBackoffMultRef.current = Math.min(pollBackoffMultRef.current * 2, 8);
-        setPollError(
-          "RingCentral rate limit — active lines could not be refreshed. Retrying more slowly; cards below may be stale.",
-        );
+        if (displayedCallsRef.current.length > 0) {
+          setPollError(
+            "RingCentral rate limit — active lines could not be refreshed. Retrying more slowly; cards below may be stale.",
+          );
+        } else {
+          setPollError(null);
+        }
         return;
       }
 
