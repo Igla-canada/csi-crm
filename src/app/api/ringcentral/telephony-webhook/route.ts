@@ -41,14 +41,20 @@ export async function POST(req: NextRequest) {
 
   try {
     const { processed, payloadsSeen } = await applyRingCentralTelephonyWebhookBody(body);
-    if (process.env.NODE_ENV === "development" && payloadsSeen === 0) {
+    if (payloadsSeen === 0) {
       const keys = body && typeof body === "object" ? Object.keys(body as object) : [];
-      console.warn(
-        "[telephony-webhook] No session payloads parsed (RingCentral shape may differ). Top-level keys:",
-        keys,
-        "snippet:",
-        JSON.stringify(body).slice(0, 1200),
-      );
+      const snippet = JSON.stringify(body).slice(0, 1200);
+      if (process.env.NODE_ENV === "development") {
+        console.warn(
+          "[telephony-webhook] No session payloads parsed (RingCentral shape may differ). Top-level keys:",
+          keys,
+          "snippet:",
+          snippet,
+        );
+      } else if (keys.length > 0) {
+        // Production: RingCentral reached us but parser found no sessions — check Vercel logs and telephony-debug.
+        console.warn("[telephony-webhook] No session payloads parsed; keys:", keys.join(","), "snippet:", snippet);
+      }
     }
     return NextResponse.json(
       { ok: true, processed, payloadsSeen },
