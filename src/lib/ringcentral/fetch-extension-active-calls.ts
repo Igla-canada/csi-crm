@@ -1,0 +1,256 @@
+import "server-only";
+
+import { CallDirection } from "@/lib/db";
+import { aggregatePathErrorsAreAllRateLimited } from "@/lib/ringcentral/active-calls-error";
+import { getExtensionActiveCallsPollPlan } from "@/lib/ringcentral/env";
+import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
+
+/** Space out multi-extension active-calls GETs to avoid burst rate limits (4+ extensions). */
+const BETWEEN_EXTENSION_POLL_MS = 800;
+
+const MIN_DIGITS_LOOKUP = 7;
+
+type RcParty = { phoneNumber?: string; extensionNumber?: string; name?: string };
+
+type RcActiveRecord = {
+  id?: string;
+  sessionId?: string;
+  direction?: string;
+  from?: RcParty;
+  to?: RcParty;
+  /** Present on many payloads; absent means we cannot infer end state (keep row). */
+  telephonyStatus?: string;
+  result?: string;
+};
+
+/** RC often keeps rows in `active-calls` briefly after hangup; drop clearly finished sessions. */
+function telephonyStatusLooksEnded(raw: string | undefined): boolean {
+  const s = String(raw ?? "")
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .trim();
+  if (!s) return false;
+  const compact = s.replace(/\s+/g, "");
+  return (
+    compact === "gone" ||
+    compact === "nocall" ||
+    compact === "canceled" ||
+    compact === "cancelled" ||
+    /\bdisconnect/.test(s) ||
+    /\bhang\s*up/.test(s) ||
+    /\bhangup/.test(compact) ||
+    /\bterminated/.test(s) ||
+    /\bvoice\s*mail\b/.test(s) ||
+    /\bvoicemail\b/.test(s) ||
+    /\bmissed\b/.test(s)
+  );
+}
+
+type RcActiveListResponse = {
+  records?: RcActiveRecord[];
+};
+
+function normalizeUsLookup(raw: string): { lookup: string; callLog10: string | null } {
+  let d = raw.replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  if (d.length === 10) return { lookup: d, callLog10: d };
+  if (d.length >= MIN_DIGITS_LOOKUP) return { lookup: d, callLog10: null };
+  if (d.length >= 3 && d.length < MIN_DIGITS_LOOKUP) return { lookup: d, callLog10: null };
+  return { lookup: "", callLog10: null };
+}
+
+function rawPartyDial(p: RcParty | undefined): string {
+  if (!p) return "";
+  const tel = String(p.phoneNumber ?? "").trim();
+  if (tel) return tel;
+  return String(p.extensionNumber ?? "").trim();
+}
+
+function mapDirection(raw: string | undefined): CallDirection | null {
+  const d = String(raw ?? "").toLowerCase();
+  if (d.includes("inbound")) return CallDirection.INBOUND;
+  if (d.includes("outbound")) return CallDirection.OUTBOUND;
+  return null;
+}
+
+function directionForRecord(rec: RcActiveRecord): CallDirection {
+  return mapDirection(rec.direction) ?? CallDirection.INBOUND;
+}
+
+function pickCustomerParty(
+  r: RcActiveRecord,
+  direction: CallDirection,
+): { digits: string; callLog10: string | null; name: string | null } | null {
+  const outbound = direction === CallDirection.OUTBOUND;
+  const primary = outbound ? r.to : r.from;
+  const secondary = outbound ? r.from : r.to;
+
+  for (const party of [primary, secondary]) {
+    const raw = rawPartyDial(party);
+    if (!raw) continue;
+    const { lookup, callLog10 } = normalizeUsLookup(raw);
+    if (lookup.length < 3) continue;
+    return { digits: lookup, callLog10, name: party?.name ?? null };
+  }
+  return null;
+}
+
+function formatPhoneDisplay(digits: string, callLog10: string | null): string {
+  const d = (callLog10 ?? digits).replace(/\D/g, "");
+  if (d.length === 10) {
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  }
+  if (d.length >= 3 && d.length < MIN_DIGITS_LOOKUP) {
+    return `Ext. ${d}`;
+  }
+  return digits;
+}
+
+export type ExtensionActiveCallSummary = {
+  /** Stable key for React (RC telephony session when present). */
+  key: string;
+  direction: CallDirection;
+  phoneDigits: string;
+  phoneDisplay: string;
+  callerName: string | null;
+};
+
+export type ExtensionActiveCallsFetchMeta = {
+  summaries: ExtensionActiveCallSummary[];
+  /** Sum of `records.length` from each RingCentral response before filtering. */
+  rawRecordCount: number;
+  /** Sum of rows skipped as ended across polls. */
+  skippedEnded: number;
+  /** Human-readable poll targets (JWT ~ or list of extension ids). */
+  pollTargetDescription: string;
+  /** Every extension leg failed with rate limit — treat as empty so the client can run post-call hide logic. */
+  extensionPollRateLimited?: boolean;
+};
+
+function mapRecordsToSummaries(records: RcActiveRecord[]): {
+  summaries: ExtensionActiveCallSummary[];
+  skippedEnded: number;
+} {
+  const out: ExtensionActiveCallSummary[] = [];
+  let skippedEnded = 0;
+
+  for (const rec of records) {
+    const statusHint = String(rec.telephonyStatus ?? rec.result ?? "").trim();
+    if (telephonyStatusLooksEnded(statusHint)) {
+      skippedEnded += 1;
+      continue;
+    }
+
+    const direction = directionForRecord(rec);
+    const sid = String(rec.sessionId ?? "").trim();
+    const id = String(rec.id ?? "").trim();
+    const keyBase = sid || id;
+    const party = pickCustomerParty(rec, direction);
+    if (party) {
+      const key = keyBase || `${direction}-${party.digits}-${out.length}`;
+      out.push({
+        key,
+        direction,
+        phoneDigits: party.digits,
+        phoneDisplay: formatPhoneDisplay(party.digits, party.callLog10),
+        callerName: party.name,
+      });
+      continue;
+    }
+    if (!keyBase) continue;
+    const nameFromParty =
+      (direction === CallDirection.INBOUND ? rec.from?.name : rec.to?.name) ??
+      (direction === CallDirection.INBOUND ? rec.to?.name : rec.from?.name) ??
+      null;
+    out.push({
+      key: keyBase,
+      direction,
+      phoneDigits: "",
+      phoneDisplay: direction === CallDirection.INBOUND ? "Incoming call" : "Active call",
+      callerName: nameFromParty?.trim() ? nameFromParty.trim() : null,
+    });
+  }
+
+  return { summaries: out, skippedEnded };
+}
+
+async function fetchActiveCallsForSinglePath(
+  platform: Awaited<ReturnType<typeof getRingCentralPlatform>>,
+  path: string,
+): Promise<{ summaries: ExtensionActiveCallSummary[]; rawRecordCount: number; skippedEnded: number }> {
+  let resp: Awaited<ReturnType<typeof platform.get>>;
+  try {
+    resp = await platform.get(path);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const st =
+      /parameter\s*\[extensionId\]\s*is not found|extensionid.*not found/i.test(msg) ? 404 : 502;
+    throw new Error(`RingCentral active-calls failed (${st}): ${msg.slice(0, 400)}`);
+  }
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`RingCentral active-calls failed (${resp.status}): ${text.slice(0, 400)}`);
+  }
+  const body = (await resp.json()) as RcActiveListResponse;
+  const records = body.records ?? [];
+  const { summaries, skippedEnded } = mapRecordsToSummaries(records);
+  return { summaries, rawRecordCount: records.length, skippedEnded };
+}
+
+/**
+ * Read-only: active calls for JWT extension (~) and/or each id in `RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID(S)`.
+ * Merges by session key; duplicate keys from multiple extensions keep the last poll’s row.
+ */
+export async function fetchExtensionActiveCallsWithMeta(): Promise<ExtensionActiveCallsFetchMeta> {
+  const plan = getExtensionActiveCallsPollPlan();
+  const platform = await getRingCentralPlatform();
+  const merged = new Map<string, ExtensionActiveCallSummary>();
+  let rawRecordCount = 0;
+  let skippedEnded = 0;
+  const pathErrors: string[] = [];
+
+  for (let i = 0; i < plan.paths.length; i++) {
+    const path = plan.paths[i]!;
+    if (i > 0) {
+      await new Promise((r) => setTimeout(r, BETWEEN_EXTENSION_POLL_MS));
+    }
+    try {
+      const part = await fetchActiveCallsForSinglePath(platform, path);
+      rawRecordCount += part.rawRecordCount;
+      skippedEnded += part.skippedEnded;
+      for (const s of part.summaries) {
+        merged.set(s.key, s);
+      }
+    } catch (e) {
+      pathErrors.push(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  if (pathErrors.length === plan.paths.length) {
+    if (aggregatePathErrorsAreAllRateLimited(pathErrors)) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn(
+          "[fetchExtensionActiveCallsWithMeta] All extension polls rate-limited; returning empty so dock can clear.",
+        );
+      }
+      return {
+        summaries: [],
+        rawRecordCount: 0,
+        skippedEnded: 0,
+        pollTargetDescription: plan.describeTarget,
+        extensionPollRateLimited: true,
+      };
+    }
+    throw new Error(pathErrors.join(" | "));
+  }
+  if (pathErrors.length > 0 && process.env.NODE_ENV === "development") {
+    console.warn("[fetchExtensionActiveCallsWithMeta] Some extension polls failed:", pathErrors);
+  }
+
+  return {
+    summaries: [...merged.values()],
+    rawRecordCount,
+    skippedEnded,
+    pollTargetDescription: plan.describeTarget,
+  };
+}

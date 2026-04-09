@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local IDE / agent (not shared)
+.agents/
+.claude/
+.windsurf/
+
+# Prisma local dev database
+prisma/*.db
+prisma/*.db-journal

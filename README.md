@@ -1,36 +1,107 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Car Systems CRM
 
-## Getting Started
+Car Systems CRM is a branded MVP for a car systems installation business. It combines:
 
-First, run the development server:
+- client management
+- structured call logging
+- appointment booking with capacity rules
+- CSV import for retroactive history
+- role-based views
+- operational reporting
+
+## Stack
+
+- Next.js 16 App Router
+- TypeScript
+- Supabase (PostgreSQL via `@supabase/supabase-js`, service role on the server)
+- Tailwind CSS 4
+
+## Local Setup
+
+1. Create a Supabase project and run `database/schema.sql` in the SQL Editor (empty `public` schema), unless you already have compatible tables from a prior setup.
+
+2. Copy `.env.example` to `.env` and set `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and **`SUPABASE_SERVICE_ROLE_KEY`** (server-only).
+
+3. Install dependencies:
+
+```bash
+npm install
+```
+
+4. Seed demo data (wipes and repopulates public CRM tables):
+
+```bash
+npm run db:seed
+```
+
+5. Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Demo Users
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Use the header role switcher to view the CRM as different staff personas:
 
-## Learn More
+- `admin@carsystemscrm.local`
+- `manager@carsystemscrm.local`
+- `sales@carsystemscrm.local`
+- `tech@carsystemscrm.local`
 
-To learn more about Next.js, take a look at the following resources:
+## Implemented MVP Areas
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### User flows
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Reception/sales can search callers, log call notes, and create bookings quickly.
+- Managers can review imports, bookings, reporting, and team roles.
+- Tech users can see job context, client history, and appointment details.
 
-## Deploy on Vercel
+### Data model
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The database includes (among others):
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `User`
+- `Client`
+- `ContactPoint`
+- `Vehicle`
+- `CallLog`
+- `CallResultOption`
+- `Opportunity`
+- `Appointment`
+- `ImportBatch`
+- `ImportRow`
+- `CalendarConfig`
+- `AuditLog`
+
+### CSV import rules
+
+- normalizes phone numbers before matching
+- creates clients when no phone match exists
+- stores every source row in `ImportRow`
+- creates historical call logs and opportunity records from imported rows
+- flags review cases when matching needs confirmation
+
+### Booking model
+
+- stores appointments with `resourceKey` and `capacitySlot`
+- supports overlapping slots using configurable parallel capacity
+- keeps `googleEventId` and sync state on appointments so real Google Calendar sync can be attached next
+
+### Reporting
+
+- lead sources
+- call outcomes
+- staff activity
+- product / service demand mix
+
+## Verification
+
+The current project passes:
+
+```bash
+npm run lint
+npm run build
+```

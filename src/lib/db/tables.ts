@@ -1,0 +1,20 @@
+/** PascalCase table names in the public schema (match quoted Postgres identifiers). */
+export const tables = {
+  User: "User",
+  Client: "Client",
+  ContactPoint: "ContactPoint",
+  Vehicle: "Vehicle",
+  CallLog: "CallLog",
+  CallResultOption: "CallResultOption",
+  BookingTypeOption: "BookingTypeOption",
+  ProductServiceOption: "ProductServiceOption",
+  LeadSourceOption: "LeadSourceOption",
+  Opportunity: "Opportunity",
+  Appointment: "Appointment",
+  PaymentEvent: "PaymentEvent",
+  ImportBatch: "ImportBatch",
+  ImportRow: "ImportRow",
+  CalendarConfig: "CalendarConfig",
+  AuditLog: "AuditLog",
+  TelephonyLiveSession: "TelephonyLiveSession",
+} as const;

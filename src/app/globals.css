@@ -1,26 +1,118 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f4f8fc;
+  --foreground: #1d2b3a;
+  --panel: rgba(255, 255, 255, 0.9);
+  --stroke: rgba(148, 163, 184, 0.18);
+  --muted: #64748b;
+  --brand: #1e5ea8;
+  --brand-strong: #17497f;
+  --cream: #fbfdff;
+  --blue-soft: #eaf2fb;
+  --blue-line: #d7e5f5;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(circle at top left, rgba(76, 132, 196, 0.12), transparent 25%),
+    radial-gradient(circle at bottom right, rgba(207, 226, 245, 0.42), transparent 28%),
+    linear-gradient(180deg, #f8fbff 0%, #f4f8fc 55%, #eef4fb 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body), sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4,
+[data-display] {
+  font-family: var(--font-display), sans-serif;
+}
+
+::selection {
+  background: rgba(30, 94, 168, 0.22);
+  color: white;
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 12px;
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: rgba(30, 94, 168, 0.1);
+  color: #1e5ea8;
+  cursor: pointer;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+.crm-grid {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.crm-stat {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 248, 252, 0.94));
+}
+
+.crm-badge {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(250, 252, 255, 0.98);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #58708d;
+}
+
+.crm-table-row + .crm-table-row td {
+  border-top: 1px solid #e7eef6;
+}
+
+.crm-soft-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 250, 255, 0.94));
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 0 12px 30px rgba(45, 87, 128, 0.06);
+  backdrop-filter: blur(12px);
+}
+
+.crm-soft-row {
+  background: rgba(251, 253, 255, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.crm-table-shell {
+  overflow: hidden;
+  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(251, 253, 255, 0.82);
+}
+
+.crm-table-head {
+  background: rgba(234, 242, 251, 0.72);
+  color: #64748b;
+}
+
+.crm-blue-accent {
+  color: #1e5ea8;
 }
