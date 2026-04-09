@@ -1,5 +1,4 @@
 import Image from "next/image";
-import Link from "next/link";
 import { type ReactNode, Suspense } from "react";
 
 import { getCurrentUser, hasAnyRole } from "@/lib/auth";
@@ -73,12 +72,13 @@ export async function AppShell({
                       <HeaderClientSearch />
                     </Suspense>
                   ) : null}
-                  <Link
+                  {/* Must not use next/link here: default prefetch GETs /api/logout, which clears crm-user before you click. */}
+                  <a
                     href="/api/logout"
                     className="shrink-0 self-end rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-center text-xs font-semibold text-slate-600 transition hover:bg-slate-50 sm:self-auto"
                   >
                     Sign out
-                  </Link>
+                  </a>
                 </div>
               </div>
             </header>
