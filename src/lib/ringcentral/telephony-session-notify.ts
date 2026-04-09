@@ -1,7 +1,12 @@
 import "server-only";
 
 import { CallDirection } from "@/lib/db";
+import {
+  sanitizeTelephonyContactName,
+  type TelephonyWebhookSessionStubInput,
+} from "@/lib/crm";
 import type { ExtensionActiveCallSummary } from "@/lib/ringcentral/fetch-extension-active-calls";
+import { importCallLogForTelephonySessionEnd } from "@/lib/ringcentral/sync-call-logs";
 import {
   deleteTelephonyLiveSession,
   type TelephonyLiveSessionRow,
@@ -224,6 +229,36 @@ function shouldDropSession(parties: RcParty[]): boolean {
   return parties.every((p) => isPartyEnded(p));
 }
 
+function pickCustomerFromSessionParties(parties: RcParty[]): ReturnType<typeof customerFromParty> | null {
+  for (const p of parties) {
+    const c = customerFromParty(p);
+    if (c) return c;
+  }
+  return null;
+}
+
+function webhookStubDispositionFromParties(
+  parties: RcParty[],
+): Pick<
+  TelephonyWebhookSessionStubInput,
+  "telephonyResult" | "telephonyCallbackPending" | "telephonyAnsweredConnected"
+> {
+  const text = parties.map((p) => partyStatusCode(p)).join(" ").toLowerCase();
+  if (/\bvoicemail\b|\bvoice\s*mail\b/.test(text)) {
+    return { telephonyResult: "Voicemail", telephonyCallbackPending: true, telephonyAnsweredConnected: false };
+  }
+  if (/\bmissed\b/.test(text)) {
+    return { telephonyResult: "Missed", telephonyCallbackPending: true, telephonyAnsweredConnected: false };
+  }
+  if (/\bfax\b/.test(text)) {
+    return { telephonyResult: "Fax", telephonyCallbackPending: false, telephonyAnsweredConnected: false };
+  }
+  if (/\bcanceled\b|\bcancelled\b/.test(text)) {
+    return { telephonyResult: "Canceled", telephonyCallbackPending: false, telephonyAnsweredConnected: false };
+  }
+  return { telephonyResult: "Call completed", telephonyCallbackPending: false, telephonyAnsweredConnected: true };
+}
+
 /**
  * Process RingCentral account telephony session webhook payload(s).
  * Upserts one row per session for the live dock; deletes when the session has fully ended.
@@ -237,6 +272,24 @@ export async function applyRingCentralTelephonyWebhookBody(
   for (const payload of payloads) {
     if (shouldDropSession(payload.parties)) {
       await deleteTelephonyLiveSession(payload.sessionId);
+      const cust = pickCustomerFromSessionParties(payload.parties);
+      const disp = webhookStubDispositionFromParties(payload.parties);
+      const stub: TelephonyWebhookSessionStubInput = {
+        telephonySessionId: payload.sessionId,
+        direction: cust?.direction ?? CallDirection.INBOUND,
+        phoneNormalized: cust?.digits ?? "",
+        contactPhone10: cust?.callLog10 ?? null,
+        contactName: sanitizeTelephonyContactName(cust?.name ?? null),
+        happenedAt: new Date(),
+        ...disp,
+      };
+      try {
+        await importCallLogForTelephonySessionEnd(stub);
+      } catch (e) {
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[telephony-webhook] importCallLogForTelephonySessionEnd:", e);
+        }
+      }
       processed += 1;
       continue;
     }

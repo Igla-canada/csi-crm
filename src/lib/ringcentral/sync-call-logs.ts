@@ -8,8 +8,11 @@ import "server-only";
 import { subHours } from "date-fns";
 
 import {
+  deleteCallLogWebhookTelephonyPlaceholder,
   sanitizeTelephonyContactName,
+  type TelephonyWebhookSessionStubInput,
   upsertCallLogFromRingCentralImport,
+  upsertCallLogFromTelephonyWebhookStub,
   type RingCentralImportedCall,
 } from "@/lib/crm";
 import { CallDirection } from "@/lib/db";
@@ -32,6 +35,8 @@ type RcLeg = { recording?: RcRecording };
 type RcCallRecord = {
   id?: string;
   sessionId?: string;
+  /** Telephony session id (matches webhook session id in typical voice flows). */
+  telephonySessionId?: string;
   startTime?: string;
   type?: string;
   direction?: string;
@@ -329,4 +334,102 @@ export async function syncRingCentralVoiceCallLogsFromApi(options: {
   }
 
   return result;
+}
+
+function recordMatchesTelephonySession(rec: RcCallRecord, telephonySessionId: string): boolean {
+  const want = telephonySessionId.trim();
+  if (!want) return false;
+  const ts = String(rec.telephonySessionId ?? "").trim();
+  if (ts && ts === want) return true;
+  const sid = String(rec.sessionId ?? "").trim();
+  return Boolean(sid && sid === want);
+}
+
+const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
+const TELEPHONY_END_IMPORT_MAX_PAGES = 14;
+
+/**
+ * When a telephony session ends (webhook), try to import the matching account call-log row immediately.
+ * If RingCentral has not published it yet, writes a `webhook-ts:{session}` placeholder (same path as full sync).
+ */
+export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhookSessionStubInput): Promise<void> {
+  const env = getRingCentralEnv();
+  if (!env) {
+    return;
+  }
+
+  const sessionId = stub.telephonySessionId.trim();
+  if (!sessionId) {
+    return;
+  }
+
+  const platform = await getRingCentralPlatform();
+  const dateTo = new Date();
+  const dateFrom = subHours(dateTo, TELEPHONY_END_IMPORT_HOURS_BACK);
+
+  let page = 1;
+  const perPage = 100;
+  let matched: RcCallRecord | null = null;
+
+  for (; page <= TELEPHONY_END_IMPORT_MAX_PAGES; page++) {
+    const resp = await platform.get("/restapi/v1.0/account/~/call-log", {
+      dateFrom: dateFrom.toISOString(),
+      dateTo: dateTo.toISOString(),
+      page,
+      perPage,
+      type: "Voice",
+      view: "Detailed",
+    });
+
+    if (!resp.ok) {
+      if (process.env.NODE_ENV === "development") {
+        const text = await resp.text().catch(() => "");
+        console.warn(
+          `[telephony-session-import] call-log lookup HTTP ${resp.status} for session ${sessionId.slice(0, 24)}… ${text.slice(0, 120)}`,
+        );
+      }
+      break;
+    }
+
+    const body = (await resp.json()) as RcCallLogListResponse;
+    const records = body.records ?? [];
+
+    for (const rec of records) {
+      if (recordMatchesTelephonySession(rec, sessionId)) {
+        matched = rec;
+        break;
+      }
+    }
+    if (matched) break;
+
+    const totalPages = body.paging?.totalPages;
+    const lastPage =
+      records.length === 0 ||
+      (typeof totalPages === "number" && page >= totalPages) ||
+      records.length < perPage;
+    if (lastPage) break;
+  }
+
+  if (matched) {
+    const merged = extractRecordingFromRcRecord(matched);
+    const imported = toImportedCall(matched, merged);
+    if (imported) {
+      await deleteCallLogWebhookTelephonyPlaceholder(sessionId);
+      const { callLogId } = await upsertCallLogFromRingCentralImport(imported, env.integrationUserId);
+
+      const autoTx = getRingCentralAutoTranscribe();
+      if (autoTx && imported.recording?.contentUri) {
+        try {
+          if (await shouldStartAutoTranscriptionForCallLog(callLogId)) {
+            await startRingCentralSpeechToTextForCallLog(callLogId);
+          }
+        } catch {
+          /* non-fatal */
+        }
+      }
+      return;
+    }
+  }
+
+  await upsertCallLogFromTelephonyWebhookStub(stub, env.integrationUserId);
 }

@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/ringcentral/sync-cron",
-      "schedule": "*/5 * * * *"
-    }
-  ]
-}

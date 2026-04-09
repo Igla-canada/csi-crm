@@ -20,8 +20,8 @@ export function CallsListRefreshButton() {
         Refresh list
       </button>
       <p className="max-w-[240px] text-right text-[11px] leading-snug text-slate-500">
-        Fetches the latest rows from the database. New RingCentral calls only appear after sync imports them (cron or
-        Workspace → RingCentral).
+        Fetches the latest rows from the database. New RingCentral rows usually appear after the telephony webhook ends
+        the session (or after Settings → Sync call logs now).
       </p>
     </div>
   );

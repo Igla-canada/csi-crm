@@ -119,13 +119,17 @@ export function RingCentralSettingsCard({ canConfigure, configured }: Props) {
         <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=true</code>.
       </p>
       <p className="mt-3 text-sm leading-6 text-slate-600">
-        <span className="font-semibold text-slate-800">Near-live sync</span>: schedule an HTTP client (e.g.{" "}
-        <span className="font-medium">Vercel Cron</span> via <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">vercel.json</code>) to{" "}
-        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">GET /api/ringcentral/sync-cron</code> with{" "}
-        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">Authorization: Bearer</code> your{" "}
-        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">CRON_SECRET</code>. That pulls recent call logs on a timer
-        without opening Settings. Optional: set <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">NEXT_PUBLIC_UI_LIVE_REFRESH_SEC</code>{" "}
-        to <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">sync</code> (or a seconds value, min 8) so open tabs refresh in step with the live call poll; staff can pause under Settings → Live UI refresh while debugging.
+        <span className="font-semibold text-slate-800">Call logs in the database</span>: when a telephony session ends,
+        RingCentral POSTs to the webhook and the server tries to import the matching account call-log row immediately; if
+        the log is not available yet, it creates a short-lived placeholder (id{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">webhook-ts:…</code>) until you run{" "}
+        <span className="font-medium">Sync call logs now</span> below. Optional: an external scheduler (e.g. cron-job.org)
+        can <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">GET /api/ringcentral/sync-cron</code> with{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">Authorization: Bearer</code>{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">CRON_SECRET</code> — not required if you sync manually.
+        Set <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">NEXT_PUBLIC_UI_LIVE_REFRESH_SEC</code> to{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">sync</code> (or a seconds value) so open tabs refresh
+        with the live call poll; staff can pause under Settings → Live UI refresh while debugging.
       </p>
       {!configured ? (
         <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">

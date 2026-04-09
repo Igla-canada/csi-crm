@@ -2664,6 +2664,59 @@ export async function upsertCallLogFromRingCentralImport(
   return { callLogId: logId, clientId, created: true };
 }
 
+/** Synthetic id for call rows created when the telephony webhook sees a session end before call-log API lists the call. */
+export const WEBHOOK_TELEPHONY_LOG_ID_PREFIX = "webhook-ts:";
+
+export function webhookTelephonyPlaceholderRingCentralId(telephonySessionId: string): string {
+  return `${WEBHOOK_TELEPHONY_LOG_ID_PREFIX}${telephonySessionId.trim()}`;
+}
+
+/** Remove placeholder row before upserting the real RingCentral call-log id for the same session. */
+export async function deleteCallLogWebhookTelephonyPlaceholder(telephonySessionId: string): Promise<void> {
+  const id = webhookTelephonyPlaceholderRingCentralId(telephonySessionId);
+  const { error } = await sb().from(tables.CallLog).delete().eq("ringCentralCallLogId", id);
+  if (error) throw error;
+}
+
+export type TelephonyWebhookSessionStubInput = {
+  telephonySessionId: string;
+  direction: CallDirection;
+  phoneNormalized: string;
+  contactPhone10: string | null;
+  contactName: string;
+  happenedAt: Date;
+  telephonyResult: string | null;
+  telephonyCallbackPending: boolean;
+  telephonyAnsweredConnected: boolean;
+};
+
+/**
+ * Placeholder call log when the telephony webhook sees a session end before the account call-log lists the call.
+ * Idempotent on `webhook-ts:{sessionId}`. Manual “Sync call logs” adds the real RC row when available.
+ */
+export async function upsertCallLogFromTelephonyWebhookStub(
+  input: TelephonyWebhookSessionStubInput,
+  integrationUserId: string,
+): Promise<{ callLogId: string; clientId: string; created: boolean }> {
+  const ringCentralCallLogId = webhookTelephonyPlaceholderRingCentralId(input.telephonySessionId);
+  const row: RingCentralImportedCall = {
+    ringCentralCallLogId,
+    direction: input.direction,
+    happenedAt: input.happenedAt,
+    phoneNormalized: input.phoneNormalized,
+    contactPhone10: input.contactPhone10,
+    contactName: input.contactName,
+    metadata: {
+      source: "telephony-webhook-session-end",
+      telephonySessionId: input.telephonySessionId,
+    },
+    telephonyResult: input.telephonyResult,
+    telephonyCallbackPending: input.telephonyCallbackPending,
+    telephonyAnsweredConnected: input.telephonyAnsweredConnected,
+  };
+  return upsertCallLogFromRingCentralImport(row, integrationUserId);
+}
+
 /** New RingCentral stubs: use caller-ID name when present; otherwise "Caller". */
 async function createMinimalTelephonyClient(
   phoneNormalized: string,
