@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
+import { CRM_USER_COOKIE } from "@/lib/crm-user-constants";
+
 function isPublicPath(pathname: string) {
   return (
     pathname === "/login" ||
@@ -25,7 +27,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  if (!req.cookies.get("crm-user")?.value?.trim()) {
+  if (!req.cookies.get(CRM_USER_COOKIE)?.value?.trim()) {
     // Let Route Handlers enforce session via `cookies()` (same runtime as RSC auth). Edge middleware can disagree with
     // the Node handler on cookie visibility in some deployments, which caused false 401s on `/api/ringcentral/active-calls`
     // while the rest of the app still showed a signed-in shell (e.g. long calls / hold / another line).

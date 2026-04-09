@@ -1,6 +1,5 @@
-import { NextResponse } from "next/server";
-
 import { getCurrentUserForApi } from "@/lib/auth";
+import { jsonPrivate } from "@/lib/api-private-json";
 import { parseExtensionActiveCallsFailure } from "@/lib/ringcentral/active-calls-error";
 import {
   type ExtensionActiveCallSummary,
@@ -25,17 +24,19 @@ function mergeDockCalls(
   return [...map.values()];
 }
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const user = await getCurrentUserForApi();
   if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return jsonPrivate({ error: "Unauthorized" }, { status: 401 });
   }
   const caps = getUserCapabilities(user);
   if (!caps.canViewCallsSection) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return jsonPrivate({ error: "Forbidden" }, { status: 403 });
   }
   if (!isRingCentralConfigured()) {
-    return NextResponse.json({ ok: true, configured: false, calls: [] as const });
+    return jsonPrivate({ ok: true, configured: false, calls: [] as const });
   }
 
   let webhookCalls: ExtensionActiveCallSummary[] = [];
@@ -80,7 +81,7 @@ export async function GET() {
   };
 
   if (calls.length > 0) {
-    return NextResponse.json({
+    return jsonPrivate({
       ok: true,
       configured: true,
       calls,
@@ -128,7 +129,7 @@ export async function GET() {
         "RingCentral returned 401 — JWT may be expired or invalid. Regenerate RINGCENTRAL_JWT in the developer console.";
     }
 
-    return NextResponse.json(
+    return jsonPrivate(
       {
         ok: false,
         configured: true,
@@ -157,7 +158,7 @@ export async function GET() {
         ? "RingCentral returned active-call rows but all were filtered (e.g. ended status). If this persists during a live call, share a redacted API sample."
         : null;
 
-  return NextResponse.json({
+  return jsonPrivate({
     ok: true,
     configured: true,
     calls: [] as const,

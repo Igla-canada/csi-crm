@@ -1,7 +1,6 @@
 import "server-only";
 
-/** HttpOnly marker: signed-in CRM user email (lowercase). */
-export const CRM_USER_COOKIE = "crm-user";
+export { CRM_USER_COOKIE } from "@/lib/crm-user-constants";
 
 /** After Google sign-in, keep users logged in across browser restarts (~400 days). */
 export const CRM_SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 400;

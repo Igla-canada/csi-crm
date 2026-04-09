@@ -1,6 +1,8 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 
+import { CRM_USER_COOKIE } from "@/lib/crm-user-constants";
 import { getSupabaseAdmin, tables, type UserRole } from "@/lib/db";
 
 const DEFAULT_EMAIL = "admin@carsystemscrm.local";
@@ -22,7 +24,7 @@ export type CrmUserRow = {
 export async function getCurrentUser(): Promise<CrmUserRow> {
   const cookieStore = await cookies();
   const allowDefault = process.env.CRM_ALLOW_DEFAULT_USER === "true";
-  let email = cookieStore.get("crm-user")?.value?.trim().toLowerCase();
+  let email = cookieStore.get(CRM_USER_COOKIE)?.value?.trim().toLowerCase();
 
   if (!email) {
     if (allowDefault) {
@@ -46,9 +48,12 @@ export async function getCurrentUser(): Promise<CrmUserRow> {
 
 /** Same resolution as `getCurrentUser` but returns null instead of redirecting (for Route Handlers). */
 export async function getCurrentUserForApi(): Promise<CrmUserRow | null> {
+  // Tie auth to the real request so Route Handlers are not treated as static/cached with an empty cookie store
+  // (fixes periodic 401 from the live dock ~30s after load on some hosts).
+  await connection();
   const cookieStore = await cookies();
   const allowDefault = process.env.CRM_ALLOW_DEFAULT_USER === "true";
-  let email = cookieStore.get("crm-user")?.value?.trim().toLowerCase();
+  let email = cookieStore.get(CRM_USER_COOKIE)?.value?.trim().toLowerCase();
 
   if (!email) {
     if (allowDefault) {

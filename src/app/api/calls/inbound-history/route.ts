@@ -1,6 +1,5 @@
-import { NextResponse } from "next/server";
-
 import { getCurrentUserForApi } from "@/lib/auth";
+import { jsonPrivate } from "@/lib/api-private-json";
 import { isCallHistoryOpenLogDisabled, listInboundCallHistory } from "@/lib/crm";
 import type { InboundCallHistoryRowDto } from "@/lib/inbound-call-history-dto";
 import { getUserCapabilities } from "@/lib/user-privileges";
@@ -9,14 +8,16 @@ import { getUserCapabilities } from "@/lib/user-privileges";
  * JSON snapshot for the Call history table. Used by client polling so the list
  * updates without relying on RSC `router.refresh()` caching behavior.
  */
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const user = await getCurrentUserForApi();
   if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return jsonPrivate({ error: "Unauthorized" }, { status: 401 });
   }
   const caps = getUserCapabilities(user);
   if (!caps.canViewCallsSection) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return jsonPrivate({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -42,12 +43,9 @@ export async function GET() {
         }),
     }));
 
-    return NextResponse.json(
-      { rows: payload },
-      { headers: { "Cache-Control": "no-store, max-age=0" } },
-    );
+    return jsonPrivate({ rows: payload });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Failed to load call history.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return jsonPrivate({ error: message }, { status: 500 });
   }
 }
