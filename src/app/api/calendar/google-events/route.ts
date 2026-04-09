@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUserForApi } from "@/lib/auth";
 import { listCalendarEventsWithRefreshToken } from "@/lib/google-calendar/events";
 import { resolveUserGoogleCalendarId } from "@/lib/google-calendar/sync-config";
 
@@ -9,7 +9,10 @@ import { resolveUserGoogleCalendarId } from "@/lib/google-calendar/sync-config";
  * Returns Google Calendar events for the signed-in user’s connected calendar (same account as Settings → Connect Google).
  */
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const user = await getCurrentUserForApi();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const refresh = user.googleRefreshToken?.trim();
   if (!refresh) {
     return NextResponse.json([]);

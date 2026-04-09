@@ -2,12 +2,15 @@ import { endOfDay, parseISO, startOfDay } from "date-fns";
 import { NextResponse, type NextRequest } from "next/server";
 import Papa from "papaparse";
 
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUserForApi } from "@/lib/auth";
 import { listBookingCallLinkExportRows } from "@/lib/crm";
 import { getUserCapabilities } from "@/lib/user-privileges";
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const user = await getCurrentUserForApi();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const caps = getUserCapabilities(user);
   if (!caps.canViewReports) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

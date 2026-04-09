@@ -1,7 +1,7 @@
 import { endOfDay, formatISO, parseISO, startOfDay } from "date-fns";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUserForApi } from "@/lib/auth";
 import { fetchClientsByIds, listBookingCallLinkExportRows, listPaymentEventsForExport } from "@/lib/crm";
 import { signedPaymentAmountCents } from "@/lib/crm-types";
 import { getUserCapabilities } from "@/lib/user-privileges";
@@ -53,7 +53,10 @@ type ExplorerBookingRow = {
 };
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUser();
+  const user = await getCurrentUserForApi();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const caps = getUserCapabilities(user);
   if (!caps.canViewReports) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

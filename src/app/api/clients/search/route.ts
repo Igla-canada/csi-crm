@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUserForApi } from "@/lib/auth";
 import { filterClientsBySearchQuery } from "@/lib/client-search";
 import { getClientsOverview } from "@/lib/crm";
 import { getUserCapabilities } from "@/lib/user-privileges";
@@ -23,7 +23,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ clients: [] satisfies ClientSearchHit[] });
   }
 
-  const user = await getCurrentUser();
+  const user = await getCurrentUserForApi();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const caps = getUserCapabilities(user);
   if (!caps.canViewClients) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

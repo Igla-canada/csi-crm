@@ -26,10 +26,11 @@ export function middleware(req: NextRequest) {
   }
 
   if (!req.cookies.get("crm-user")?.value?.trim()) {
-    // API routes: return JSON so client fetch() can parse the body. A redirect to /login yields HTML (often 200 after
-    // redirect follow), which breaks res.json() and shows as a generic "Network error" in the live call dock.
+    // Let Route Handlers enforce session via `cookies()` (same runtime as RSC auth). Edge middleware can disagree with
+    // the Node handler on cookie visibility in some deployments, which caused false 401s on `/api/ringcentral/active-calls`
+    // while the rest of the app still showed a signed-in shell (e.g. long calls / hold / another line).
     if (req.nextUrl.pathname.startsWith("/api/")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.next();
     }
     const url = req.nextUrl.clone();
     url.pathname = "/login";
