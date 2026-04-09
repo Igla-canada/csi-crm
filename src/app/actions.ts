@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { z } from "zod";
 
 import { getCurrentUser } from "@/lib/auth";
+import { CRM_USER_COOKIE, getCrmSessionCookieOptions } from "@/lib/session-cookie";
 import {
   addAppointment,
   addPaymentEvent,
@@ -195,11 +196,7 @@ export async function updateWorkspaceUserAction(formData: FormData) {
 
   if (admin.id === id) {
     const cookieStore = await cookies();
-    cookieStore.set("crm-user", email, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-    });
+    cookieStore.set(CRM_USER_COOKIE, email, getCrmSessionCookieOptions());
   }
 
   revalidatePath("/", "layout");

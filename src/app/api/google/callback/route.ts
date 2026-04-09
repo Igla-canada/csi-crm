@@ -5,13 +5,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { signInOrBootstrapUserFromGoogle } from "@/lib/crm";
 import { getSupabaseAdmin, tables } from "@/lib/db";
 import { createOAuth2Client, exchangeCodeForTokens } from "@/lib/google-calendar/oauth";
-
-const cookieOpts = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
-  path: "/",
-};
+import { CRM_USER_COOKIE, getCrmSessionCookieOptions } from "@/lib/session-cookie";
 
 /**
  * Google OAuth callback. Handles:
@@ -84,12 +78,10 @@ export async function GET(req: NextRequest) {
         return NextResponse.redirect(url);
       }
 
-      const res = NextResponse.redirect(new URL("/", req.nextUrl.origin));
-      res.cookies.set("crm-user", email, {
-        ...cookieOpts,
-        maxAge: 60 * 60 * 24 * 400,
-      });
-      return res;
+      // Set session on the same `cookies()` store as the OAuth state deletes above. Putting `crm-user` only on a
+      // separate `NextResponse.cookies` can fail to persist in the App Router (refresh / dock poll then see no cookie).
+      jar.set(CRM_USER_COOKIE, email, getCrmSessionCookieOptions());
+      return NextResponse.redirect(new URL("/", req.nextUrl.origin));
     }
 
     const refresh = tokens.refresh_token;
