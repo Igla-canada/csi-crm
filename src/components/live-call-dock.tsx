@@ -51,8 +51,19 @@ function isRateLimitedResponse(res: Response, errorText: string, upstreamStatus?
   return /\brate|throttl|exceeded|too many requests|quota/i.test(errorText);
 }
 
-/** After RingCentral reports no active lines, keep the last card(s) visible this long (time to tap “Open call log”). */
-const POST_CALL_CARD_GRACE_MS = 30_000;
+/** Seconds to keep the on-call card after the server first reports zero active lines (RingCentral often ghosts the same session once). */
+function readPostCallGraceMs(): number {
+  const raw = process.env.NEXT_PUBLIC_LIVE_DOCK_POST_CALL_GRACE_SEC;
+  if (raw != null && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n)) {
+      return Math.min(Math.max(Math.floor(n), 5), 120) * 1000;
+    }
+  }
+  return 30_000;
+}
+
+const POST_CALL_CARD_GRACE_MS = readPostCallGraceMs();
 
 export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
   const router = useRouter();
@@ -75,10 +86,13 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
   const hideAfterGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Session keys hidden after grace — same key may reappear from RC briefly; suppress during cooldown. */
   const graceDismissedAtByKeyRef = useRef<Map<string, number>>(new Map());
+  /** When post-call hide timer is running, RC session key set we are hiding (ghost polls with the same keys must not cancel the timer). */
+  const scheduledHideKeysRef = useRef<string | null>(null);
   const pollChainCancelRef = useRef(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearPostCallGraceTimer = useCallback(() => {
+    scheduledHideKeysRef.current = null;
     if (hideAfterGraceTimerRef.current != null) {
       clearTimeout(hideAfterGraceTimerRef.current);
       hideAfterGraceTimerRef.current = null;
@@ -174,6 +188,15 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
       }
       if (next.length > 0) {
         const now = Date.now();
+        const incomingKeys = [...next].map((c) => c.key).sort().join("\0");
+        const ghostWhileWaitingToHide =
+          hideAfterGraceTimerRef.current != null &&
+          scheduledHideKeysRef.current != null &&
+          incomingKeys === scheduledHideKeysRef.current;
+        // Same session often reappears for one poll after hangup; do not cancel the 30s hide or flash the card back.
+        if (ghostWhileWaitingToHide) {
+          return;
+        }
         const filtered = filterLinesAfterGraceDismiss(next, graceDismissedAtByKeyRef.current, now);
         clearPostCallGraceTimer();
         if (filtered.length > 0) {
@@ -187,8 +210,10 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
         const hadVisibleLines = displayedCallsRef.current.length > 0;
         if (hadVisibleLines) {
           if (hideAfterGraceTimerRef.current == null) {
+            scheduledHideKeysRef.current = [...displayedCallsRef.current].map((c) => c.key).sort().join("\0");
             hideAfterGraceTimerRef.current = setTimeout(() => {
               hideAfterGraceTimerRef.current = null;
+              scheduledHideKeysRef.current = null;
               const snapshot = displayedCallsRef.current;
               const droppedAt = Date.now();
               for (const c of snapshot) {
