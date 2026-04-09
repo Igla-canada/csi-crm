@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
       if (!email) {
         const url = new URL("/login", req.nextUrl.origin);
         url.searchParams.set("error", "no_email");
-        const res = NextResponse.redirect(url);
+        const res = NextResponse.redirect(url, 303);
         clearOAuthCookies(res);
         return res;
       }
@@ -87,14 +87,14 @@ export async function GET(req: NextRequest) {
           url.searchParams.set("error", "signin");
           url.searchParams.set("message", msg.slice(0, 200));
         }
-        const res = NextResponse.redirect(url);
+        const res = NextResponse.redirect(url, 303);
         clearOAuthCookies(res);
         return res;
       }
 
       // All Set-Cookie headers must live on this Response. Relying on `cookies().set()` + a separate
       // `NextResponse.redirect()` often drops `crm-user` on Vercel, so refresh / client navigations look logged out.
-      const res = NextResponse.redirect(new URL("/", req.nextUrl.origin));
+      const res = NextResponse.redirect(new URL("/", req.nextUrl.origin), 303);
       clearOAuthCookies(res);
       res.cookies.set(CRM_USER_COOKIE, email, getCrmSessionCookieOptions());
       return res;
@@ -124,11 +124,11 @@ export async function GET(req: NextRequest) {
         const url = new URL("/settings", req.nextUrl.origin);
         url.searchParams.set("google", "error");
         url.searchParams.set("message", upErr.message);
-        const res = NextResponse.redirect(url);
+        const res = NextResponse.redirect(url, 303);
         clearOAuthCookies(res);
         return res;
       }
-      const res = NextResponse.redirect(new URL("/settings?google=connected", req.nextUrl.origin));
+      const res = NextResponse.redirect(new URL("/settings?google=connected", req.nextUrl.origin), 303);
       clearOAuthCookies(res);
       return res;
     }
