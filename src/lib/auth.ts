@@ -22,8 +22,6 @@ export type CrmUserRow = {
 };
 
 export async function getCurrentUser(): Promise<CrmUserRow> {
-  // Same rationale as getCurrentUserForApi: ensure we read cookies in a real request (avoids empty store on some RSC paths).
-  await connection();
   const cookieStore = await cookies();
   const allowDefault = process.env.CRM_ALLOW_DEFAULT_USER === "true";
   let email = cookieStore.get(CRM_USER_COOKIE)?.value?.trim().toLowerCase();

@@ -3,15 +3,28 @@ import { cookies } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 
 import { signInOrBootstrapUserFromGoogle } from "@/lib/crm";
+import { CRM_USER_COOKIE } from "@/lib/crm-user-constants";
 import { getSupabaseAdmin, tables } from "@/lib/db";
 import { createOAuth2Client, exchangeCodeForTokens } from "@/lib/google-calendar/oauth";
-import { CRM_USER_COOKIE, getCrmSessionCookieOptions } from "@/lib/session-cookie";
+import { getCrmSessionCookieOptions } from "@/lib/session-cookie";
+
+const OAUTH_STATE = "google_oauth_state";
+const OAUTH_PURPOSE = "google_oauth_purpose";
+const OAUTH_USER_EMAIL = "google_oauth_user_email";
+
+function clearOAuthCookies(res: NextResponse) {
+  res.cookies.delete(OAUTH_STATE);
+  res.cookies.delete(OAUTH_PURPOSE);
+  res.cookies.delete(OAUTH_USER_EMAIL);
+}
 
 /**
  * Google OAuth callback. Handles:
  * - **signin** — read profile, bootstrap first ADMIN or match Team email, set `crm-user` cookie.
  * - **calendar** — store refresh token on the signed-in CRM user (existing behavior).
  */
+export const runtime = "nodejs";
+
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const code = sp.get("code");
@@ -23,14 +36,11 @@ export async function GET(req: NextRequest) {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
-  const jar = await cookies();
-  const expected = jar.get("google_oauth_state")?.value;
-  const purpose = jar.get("google_oauth_purpose")?.value ?? "calendar";
-  const oauthUserEmail = jar.get("google_oauth_user_email")?.value ?? null;
 
-  jar.delete("google_oauth_state");
-  jar.delete("google_oauth_purpose");
-  jar.delete("google_oauth_user_email");
+  const jar = await cookies();
+  const expected = jar.get(OAUTH_STATE)?.value;
+  const purpose = jar.get(OAUTH_PURPOSE)?.value ?? "calendar";
+  const oauthUserEmail = jar.get(OAUTH_USER_EMAIL)?.value ?? null;
 
   if (!state || !expected || state !== expected) {
     return new NextResponse("Invalid or missing OAuth state. Start again from the sign-in or Settings page.", {
@@ -51,7 +61,7 @@ export async function GET(req: NextRequest) {
     if (purpose === "signin") {
       const client = createOAuth2Client();
       if (!client) {
-        throw new Error("OAuth client not configured.");
+        throw new Error("OAuth client is not configured.");
       }
       client.setCredentials(tokens);
       const oauth2 = google.oauth2({ version: "v2", auth: client });
@@ -61,7 +71,9 @@ export async function GET(req: NextRequest) {
       if (!email) {
         const url = new URL("/login", req.nextUrl.origin);
         url.searchParams.set("error", "no_email");
-        return NextResponse.redirect(url);
+        const res = NextResponse.redirect(url);
+        clearOAuthCookies(res);
+        return res;
       }
 
       try {
@@ -75,13 +87,17 @@ export async function GET(req: NextRequest) {
           url.searchParams.set("error", "signin");
           url.searchParams.set("message", msg.slice(0, 200));
         }
-        return NextResponse.redirect(url);
+        const res = NextResponse.redirect(url);
+        clearOAuthCookies(res);
+        return res;
       }
 
-      // Set session on the same `cookies()` store as the OAuth state deletes above. Putting `crm-user` only on a
-      // separate `NextResponse.cookies` can fail to persist in the App Router (refresh / dock poll then see no cookie).
-      jar.set(CRM_USER_COOKIE, email, getCrmSessionCookieOptions());
-      return NextResponse.redirect(new URL("/", req.nextUrl.origin));
+      // All Set-Cookie headers must live on this Response. Relying on `cookies().set()` + a separate
+      // `NextResponse.redirect()` often drops `crm-user` on Vercel, so refresh / client navigations look logged out.
+      const res = NextResponse.redirect(new URL("/", req.nextUrl.origin));
+      clearOAuthCookies(res);
+      res.cookies.set(CRM_USER_COOKIE, email, getCrmSessionCookieOptions());
+      return res;
     }
 
     const refresh = tokens.refresh_token;
@@ -108,9 +124,13 @@ export async function GET(req: NextRequest) {
         const url = new URL("/settings", req.nextUrl.origin);
         url.searchParams.set("google", "error");
         url.searchParams.set("message", upErr.message);
-        return NextResponse.redirect(url);
+        const res = NextResponse.redirect(url);
+        clearOAuthCookies(res);
+        return res;
       }
-      return NextResponse.redirect(new URL("/settings?google=connected", req.nextUrl.origin));
+      const res = NextResponse.redirect(new URL("/settings?google=connected", req.nextUrl.origin));
+      clearOAuthCookies(res);
+      return res;
     }
     return new NextResponse(
       [
