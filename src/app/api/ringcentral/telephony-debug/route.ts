@@ -4,6 +4,7 @@ import { getCurrentUserForApi } from "@/lib/auth";
 import {
   getAppPublicUrl,
   getExtensionActiveCallsPollPlan,
+  isExtensionActiveCallsPollEnabled,
   isRingCentralConfigured,
 } from "@/lib/ringcentral/env";
 import { listRingCentralExtensionsForDebug } from "@/lib/ringcentral/list-extensions-debug";
@@ -40,7 +41,7 @@ export async function GET() {
   }
 
   const appUrl = getAppPublicUrl();
-  const skipPoll = process.env.RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS === "true";
+  const skipPoll = !isExtensionActiveCallsPollEnabled();
   const extensionPollPlan = getExtensionActiveCallsPollPlan();
   const webhookFullUrl = appUrl ? `${appUrl.replace(/\/$/, "")}/api/ringcentral/telephony-webhook` : null;
   const extIdEnvRaw =
@@ -96,7 +97,7 @@ export async function GET() {
 
   if (skipPoll && !subscriptionsError && subscriptions.length === 0) {
     hints.push(
-      "Extension active-calls polling is OFF (`RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=true`). The dock depends entirely on the telephony webhook subscription — register it below until `ringCentralSubscriptions` is non-empty.",
+      "Extension active-calls polling is OFF (default: webhook-only). Set `RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=false` only if you need REST active-calls merged in. The dock needs the telephony webhook — register it below until `ringCentralSubscriptions` is non-empty.",
     );
   }
 

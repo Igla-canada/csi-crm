@@ -41,7 +41,7 @@ export function LiveWorkspaceHeader() {
           ) : !canViewCallsSection ? (
             <span className="block text-[11px] text-slate-400">Call dock needs Calls section access</span>
           ) : liveUiSyncEnabled ? (
-            <span className="block text-[11px] text-slate-400">Dock: JWT extension active calls</span>
+            <span className="block text-[11px] text-slate-400">Dock: telephony webhooks (default)</span>
           ) : null}
         </p>
       </div>

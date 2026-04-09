@@ -104,3 +104,14 @@ export function getExtensionActiveCallsApiPath(): { path: string; describeTarget
   const plan = getExtensionActiveCallsPollPlan();
   return { path: plan.paths[0]!, describeTarget: plan.describeTarget };
 }
+
+/**
+ * When true, each `GET /api/ringcentral/active-calls` also calls RingCentral
+ * `GET …/extension/{id}/active-calls` (see {@link getExtensionActiveCallsPollPlan}).
+ *
+ * **Default off** (webhook-only dock): unset, empty, or `RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=true` all skip REST polling.
+ * Set **`RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=false`** to opt in and merge extension active-calls (uses RC API quota).
+ */
+export function isExtensionActiveCallsPollEnabled(): boolean {
+  return trimEnv("RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS") === "false";
+}

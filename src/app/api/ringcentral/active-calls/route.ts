@@ -5,7 +5,11 @@ import {
   type ExtensionActiveCallSummary,
   fetchExtensionActiveCallsWithMeta,
 } from "@/lib/ringcentral/fetch-extension-active-calls";
-import { getExtensionActiveCallsPollPlan, isRingCentralConfigured } from "@/lib/ringcentral/env";
+import {
+  getExtensionActiveCallsPollPlan,
+  isExtensionActiveCallsPollEnabled,
+  isRingCentralConfigured,
+} from "@/lib/ringcentral/env";
 import { listTelephonyLiveSessionsForDock } from "@/lib/ringcentral/telephony-live-sessions";
 import { telephonyLiveRowsToDockSummaries } from "@/lib/ringcentral/telephony-session-notify";
 import { getUserCapabilities } from "@/lib/user-privileges";
@@ -49,7 +53,7 @@ export async function GET() {
     }
   }
 
-  const skipExtensionActiveCallsPoll = process.env.RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS === "true";
+  const skipExtensionActiveCallsPoll = !isExtensionActiveCallsPollEnabled();
   let pollCalls: ExtensionActiveCallSummary[] = [];
   let extensionApiRecordCount: number | null = null;
   let extensionSkippedEnded = 0;

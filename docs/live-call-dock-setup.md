@@ -19,7 +19,7 @@ The **Live sync** switch in the CRM **header** controls:
 2. **Call history table** — polls `GET /api/calls/inbound-history` so rows update from the database without relying only on RSC refresh. **New calls** usually appear when the **telephony webhook** ends a session (server imports call log or writes a `webhook-ts:` placeholder), or after **Settings → Sync call logs now**. The refresh button is optional; it triggers the same JSON fetch plus `router.refresh()`.
 3. **Live call dock** — the browser calls `GET /api/ringcentral/active-calls` on an interval (default **30s**, floor **30s**). That response **merges**:
    - **Account telephony webhooks** (recommended): RingCentral POSTs to `/api/ringcentral/telephony-webhook`; the CRM stores rows in **`TelephonyLiveSession`** and serves them on every poll. Covers **all extensions / lines on the account** when the subscription uses `/restapi/v1.0/account/~/telephony/sessions`. **Multiple simultaneous calls** → multiple rows in the dock.
-   - **Extension active-calls API** (optional): `GET …/extension/~/active-calls` for the JWT extension only. Set **`RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=true`** to disable this leg and avoid RingCentral rate limits when webhooks are enough.
+   - **Extension active-calls API** (optional, off by default): `GET …/extension/…/active-calls`. **Default** is webhook-only (no extra RingCentral REST on each poll). Set **`RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=false`** to merge this leg in if you need a REST fallback.
 
 ## Recommended: register the telephony webhook
 
@@ -47,7 +47,7 @@ Webhook validation: RingCentral sends a **`Validation-Token`** header on setup; 
 | Extension poll empty but webhook should work | Inspect Network → `active-calls` → JSON `webhookSessions`. If 0, webhooks are not reaching the server or the payload shape differs — check server logs in dev. |
 | Amber dock error, `webhookSessions` still > 0 | Merged calls should still show; if not, file an issue with the response JSON. |
 | Call history never shows new calls | That list is **database**-backed. Confirm telephony webhooks fire when calls end, or run **Sync call logs now** (optional external ping to `sync-cron` with `CRON_SECRET`). |
-| Rate limit on active-calls | Set `RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=true` and rely on webhooks; or raise `NEXT_PUBLIC_LIVE_ACTIVE_CALL_POLL_SEC`. |
+| Rate limit on active-calls | Leave extension REST poll off (default); unset `RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS` or keep it `true`. Or raise `NEXT_PUBLIC_LIVE_ACTIVE_CALL_POLL_SEC`. |
 
 ## Files involved
 
