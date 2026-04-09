@@ -26,6 +26,11 @@ export function middleware(req: NextRequest) {
   }
 
   if (!req.cookies.get("crm-user")?.value?.trim()) {
+    // API routes: return JSON so client fetch() can parse the body. A redirect to /login yields HTML (often 200 after
+    // redirect follow), which breaks res.json() and shows as a generic "Network error" in the live call dock.
+    if (req.nextUrl.pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";

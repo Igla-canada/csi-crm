@@ -91,7 +91,18 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
     const seq = ++pollSeqRef.current;
     try {
       const res = await fetch("/api/ringcentral/active-calls", { credentials: "include" });
-      const data = (await res.json()) as {
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        if (seq !== pollSeqRef.current) return;
+        pollBackoffMultRef.current = 1;
+        setPollError(
+          res.redirected || !ct.includes("json")
+            ? "Session or API response was not JSON — try refreshing the page. If this persists, check you are signed in."
+            : `Unexpected response (${res.status})`,
+        );
+        return;
+      }
+      let data: {
         ok?: boolean;
         configured?: boolean;
         calls?: ActiveDockCallSnapshot[];
@@ -100,6 +111,14 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
         /** Server could not read extension active-calls (all legs rate-limited); empty list is not authoritative. */
         dockExtensionPollRateLimited?: boolean;
       };
+      try {
+        data = (await res.json()) as typeof data;
+      } catch {
+        if (seq !== pollSeqRef.current) return;
+        pollBackoffMultRef.current = 1;
+        setPollError("Could not parse server response. Try refreshing the page.");
+        return;
+      }
       if (seq !== pollSeqRef.current) return;
       const errText = typeof data.error === "string" ? data.error : `HTTP ${res.status}`;
       const upstream =
