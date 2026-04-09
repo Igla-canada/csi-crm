@@ -134,7 +134,11 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
           // Keep last good snapshot so the dock does not disappear during an active call.
         } else {
           pollBackoffMultRef.current = 1;
-          setPollError(errText);
+          setPollError(
+            res.status === 401
+              ? "Live dock could not verify your session (no sign-in cookie on this request). Refresh the page, or Sign out and sign in again."
+              : errText,
+          );
           // Keep showing last lines for transient errors; only clear on auth failure.
           if (res.status === 401) {
             clearPostCallGraceTimer();
