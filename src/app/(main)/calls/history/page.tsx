@@ -48,6 +48,9 @@ export default async function CallHistoryPage({
     summary: r.summary,
     openedFromCallHistoryAt: r.openedFromCallHistoryAt?.toISOString() ?? null,
     ringCentralCallLogId: r.ringCentralCallLogId,
+    telephonyResult: r.telephonyResult,
+    durationSeconds: r.durationSeconds,
+    recordingCount: r.recordingCount,
     openLogDisabled:
       !caps.canLogCalls ||
       isCallHistoryOpenLogDisabled({
@@ -63,7 +66,7 @@ export default async function CallHistoryPage({
       <SectionHeading
         eyebrow="Calls"
         title="Inbound call history"
-        text="Newest first — like a phone recents list. With Live sync on, this list re-fetches from the database on the same interval as the header. Use Refresh list to pull RingCentral for the selected date range (or the last 48 hours when no range), then reload. Open log jumps to the client to complete a RingCentral stub or review a manual inbound log."
+        text="Newest first — like a phone recents list. With Live sync on, this list re-fetches from the database on the same interval as the header. Refresh list pulls RingCentral for the selected range (or up to the last 7 days when no range), then reloads. TELUS detailed logs may list each leg separately; we show one row per RingCentral call, with result, length, and recording count when the platform provides them. Open log completes the stub on the client."
         aside={
           <Suspense
             fallback={

@@ -2243,10 +2243,16 @@ export type InboundCallHistoryRow = {
   summary: string;
   openedFromCallHistoryAt: Date | null;
   ringCentralCallLogId: string | null;
+  /** Carrier / RC disposition (e.g. Call connected, Missed). */
+  telephonyResult: string | null;
+  /** RingCentral `duration` in seconds when present on stored metadata. */
+  durationSeconds: number | null;
+  /** Distinct recording files linked on the log. */
+  recordingCount: number;
 };
 
 const INBOUND_CALL_HISTORY_LIMIT = 200;
-const INBOUND_CALL_HISTORY_LIMIT_FILTERED = 500;
+const INBOUND_CALL_HISTORY_LIMIT_FILTERED = 1000;
 
 export type InboundCallHistoryDateFilter = {
   /** `YYYY-MM-DD` interpreted in {@link getAppTimezone} */
@@ -2319,6 +2325,36 @@ export function ringCentralSyncWindowForInboundHistoryFilter(
   return { from: new Date(startMs), to: new Date(endMs) };
 }
 
+function telephonyDurationSecondsFromMetadata(meta: unknown): number | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const o = meta as Record<string, unknown>;
+  const top = o.duration;
+  if (typeof top === "number" && Number.isFinite(top) && top >= 0) {
+    return Math.min(Math.round(top), 86400);
+  }
+  if (typeof top === "string" && /^\d+$/.test(top.trim())) {
+    return Math.min(parseInt(top.trim(), 10), 86400);
+  }
+  const legs = o.legs;
+  if (!Array.isArray(legs)) return null;
+  let maxLeg = 0;
+  for (const leg of legs) {
+    if (!leg || typeof leg !== "object" || Array.isArray(leg)) continue;
+    const d = (leg as Record<string, unknown>).duration;
+    if (typeof d === "number" && Number.isFinite(d) && d >= 0) {
+      maxLeg = Math.max(maxLeg, Math.round(d));
+    }
+  }
+  return maxLeg > 0 ? Math.min(maxLeg, 86400) : null;
+}
+
+function inboundHistoryRecordingCountFromRow(row: Record<string, unknown>): number {
+  const refs = parseTelephonyRecordingRefsJson(row.telephonyRecordingRefs);
+  if (refs?.length) return refs.length;
+  const uri = String((row.telephonyRecordingContentUri as string | null | undefined) ?? "").trim();
+  return uri ? 1 : 0;
+}
+
 export async function listInboundCallHistory(
   filter?: InboundCallHistoryDateFilter | null,
 ): Promise<InboundCallHistoryRow[]> {
@@ -2329,7 +2365,7 @@ export async function listInboundCallHistory(
   let q = sb()
     .from(tables.CallLog)
     .select(
-      "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId",
+      "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingRefs,telephonyRecordingContentUri",
     )
     .eq("direction", "INBOUND");
 
@@ -2346,6 +2382,11 @@ export async function listInboundCallHistory(
   const clientMap = await fetchClientsByIds(list.map((r) => r.clientId as string));
   return list.map((r) => {
     const c = clientMap.get(r.clientId as string);
+    const row = r as Record<string, unknown>;
+    const meta =
+      row.telephonyMetadata && typeof row.telephonyMetadata === "object" && !Array.isArray(row.telephonyMetadata)
+        ? (row.telephonyMetadata as Record<string, unknown>)
+        : null;
     return {
       id: r.id as string,
       clientId: r.clientId as string,
@@ -2359,6 +2400,9 @@ export async function listInboundCallHistory(
         ? toDate(r.openedFromCallHistoryAt as string)
         : null,
       ringCentralCallLogId: (r.ringCentralCallLogId as string | null) ?? null,
+      telephonyResult: String((row.telephonyResult as string | null) ?? "").trim() || null,
+      durationSeconds: telephonyDurationSecondsFromMetadata(meta),
+      recordingCount: inboundHistoryRecordingCountFromRow(row),
     };
   });
 }

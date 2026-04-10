@@ -11,4 +11,10 @@ export type InboundCallHistoryRowDto = {
   openedFromCallHistoryAt: string | null;
   ringCentralCallLogId: string | null;
   openLogDisabled: boolean;
+  /** RingCentral / carrier-style outcome when imported. */
+  telephonyResult: string | null;
+  /** Call length in seconds from telephony metadata, when available. */
+  durationSeconds: number | null;
+  /** Number of distinct recording files on the log. */
+  recordingCount: number;
 };

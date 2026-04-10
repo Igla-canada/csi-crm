@@ -54,6 +54,9 @@ export async function GET(req: NextRequest) {
       summary: r.summary,
       openedFromCallHistoryAt: r.openedFromCallHistoryAt?.toISOString() ?? null,
       ringCentralCallLogId: r.ringCentralCallLogId,
+      telephonyResult: r.telephonyResult,
+      durationSeconds: r.durationSeconds,
+      recordingCount: r.recordingCount,
       openLogDisabled:
         !caps.canLogCalls ||
         isCallHistoryOpenLogDisabled({

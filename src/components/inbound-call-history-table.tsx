@@ -22,10 +22,17 @@ import {
   isInboundHistoryOpenLogSuppressedByLiveDock,
   navigateOpenLiveCallLogFromDock,
 } from "@/lib/live-dock-open-log-client";
+import { formatInboundCallHistoryDuration } from "@/lib/inbound-call-history-format";
 import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
 
 function formatWhen(iso: string) {
   return format(parseISO(iso), "MMM d, yyyy · h:mm a");
+}
+
+function recordingLabel(count: number): { text: string; title: string } {
+  if (count <= 0) return { text: "—", title: "No recording on file" };
+  if (count === 1) return { text: "1", title: "1 recording" };
+  return { text: String(count), title: `${count} recordings` };
 }
 
 function inboundHistoryApiUrl(dateFrom: string, dateTo: string): string {
@@ -322,10 +329,13 @@ export function InboundCallHistoryTable({
         <span className="font-semibold tabular-nums text-slate-800">{shownCount}</span> {countNoun} shown
       </p>
       <div className="overflow-x-auto">
-      <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[900px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wide text-slate-500">
             <th className="py-3 pr-4">When</th>
+            <th className="py-3 pr-3">Result</th>
+            <th className="py-3 pr-3">Length</th>
+            <th className="py-3 pr-3">Rec</th>
             <th className="py-3 pr-4">Client</th>
             <th className="py-3 pr-4">Caller</th>
             <th className="py-3 pr-4">Phone</th>
@@ -345,6 +355,9 @@ export function InboundCallHistoryTable({
                   <td className="py-3 pr-4 align-top text-slate-700">
                     <span className="font-medium text-emerald-800">Live now</span>
                   </td>
+                  <td className="py-3 pr-3 align-top text-slate-400">—</td>
+                  <td className="py-3 pr-3 align-top text-slate-400">—</td>
+                  <td className="py-3 pr-3 align-top text-slate-400">—</td>
                   <td className="py-3 pr-4 align-top font-medium text-slate-500">—</td>
                   <td className="py-3 pr-4 align-top text-slate-700">{dock.callerName?.trim() || "—"}</td>
                   <td className="py-3 pr-4 align-top text-slate-700">{dock.phoneDisplay}</td>
@@ -371,9 +384,30 @@ export function InboundCallHistoryTable({
             );
             const openLogDisabled = row.openLogDisabled || dockSuppressed;
 
+            const rec = recordingLabel(row.recordingCount ?? 0);
+
             return (
               <tr key={row.id} className="border-b border-slate-100 last:border-0">
                 <td className="py-3 pr-4 align-top text-slate-700">{formatWhen(row.happenedAt)}</td>
+                <td className="max-w-[140px] py-3 pr-3 align-top text-slate-700">
+                  <span className="line-clamp-2 text-sm" title={row.telephonyResult ?? undefined}>
+                    {row.telephonyResult?.trim() || "—"}
+                  </span>
+                </td>
+                <td className="py-3 pr-3 align-top tabular-nums text-slate-700">
+                  {formatInboundCallHistoryDuration(row.durationSeconds ?? null)}
+                </td>
+                <td className="py-3 pr-3 align-top text-center tabular-nums text-slate-800" title={rec.title}>
+                  <span
+                    className={
+                      row.recordingCount > 0
+                        ? "inline-flex min-w-[1.25rem] justify-center rounded-md bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-800"
+                        : ""
+                    }
+                  >
+                    {rec.text}
+                  </span>
+                </td>
                 <td className="py-3 pr-4 align-top font-medium text-slate-900">
                   <Link
                     href={`/clients/${row.clientId}`}

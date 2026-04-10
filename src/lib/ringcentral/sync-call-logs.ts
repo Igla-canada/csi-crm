@@ -30,7 +30,7 @@ type RcParty = { phoneNumber?: string; name?: string };
 
 type RcRecording = { id?: string; contentUri?: string; uri?: string };
 
-type RcLeg = { recording?: RcRecording };
+type RcLeg = { recording?: RcRecording; from?: RcParty; to?: RcParty; result?: string; action?: string };
 
 type RcCallRecord = {
   id?: string;
@@ -125,9 +125,7 @@ function mapDirection(raw: string | undefined): CallDirection | null {
   return null;
 }
 
-function pickCustomerPhone(r: RcCallRecord): { digits: string; callLog10: string | null; name: string | null } | null {
-  const dir = String(r.direction ?? "").toLowerCase();
-  const party = dir.includes("outbound") ? r.to : r.from;
+function tryPartyPhone(party: RcParty | undefined): { digits: string; callLog10: string | null; name: string | null } | null {
   const raw = String(party?.phoneNumber ?? "").trim();
   if (!raw) return null;
   const { lookup, callLog10 } = normalizeUsLookup(raw);
@@ -135,17 +133,70 @@ function pickCustomerPhone(r: RcCallRecord): { digits: string; callLog10: string
   return { digits: lookup, callLog10, name: party?.name ?? null };
 }
 
+/**
+ * Resolves external party phone for CRM matching. Falls back to leg-level from/to (transfers, FindMe, park)
+ * and finally imports with no dialable digits so rows still sync (Telus-style multi-leg logs often omit top-level `from`).
+ */
+function pickCustomerPhoneForImport(
+  r: RcCallRecord,
+): { digits: string; callLog10: string | null; name: string | null } {
+  const dir = String(r.direction ?? "").toLowerCase();
+  const inbound = dir.includes("inbound");
+  const partyOrder = (inbound ? [r.from, r.to] : [r.to, r.from]).filter(
+    (p): p is RcParty => p != null && typeof p === "object",
+  );
+  for (const p of partyOrder) {
+    const hit = tryPartyPhone(p);
+    if (hit) return hit;
+  }
+  const legs = r.legs;
+  if (Array.isArray(legs)) {
+    for (const leg of legs) {
+      if (!leg || typeof leg !== "object") continue;
+      const L = leg as RcLeg;
+      const order = inbound ? [L.from, L.to] : [L.to, L.from];
+      for (const p of order) {
+        const hit = tryPartyPhone(p);
+        if (hit) return hit;
+      }
+    }
+  }
+  let nameHint: string | null = null;
+  for (const p of partyOrder) {
+    const n = p?.name?.trim();
+    if (n && n.length >= 2) {
+      nameHint = n;
+      break;
+    }
+  }
+  return {
+    digits: "",
+    callLog10: null,
+    name: sanitizeTelephonyContactName(nameHint),
+  };
+}
+
+function isExcludedNonVoiceCallType(typeLower: string): boolean {
+  if (!typeLower) return false;
+  return (
+    typeLower.includes("fax") ||
+    typeLower.includes("pager") ||
+    typeLower.includes("sms") ||
+    typeLower.includes("text")
+  );
+}
+
 function toImportedCall(rec: RcCallRecord, extraRecordings?: RecordingRef[]): RingCentralImportedCall | null {
   const id = String(rec.id ?? "").trim();
   if (!id) return null;
   const type = String(rec.type ?? "").toLowerCase();
-  if (type && !type.includes("voice")) return null;
+  if (isExcludedNonVoiceCallType(type)) return null;
+  /* List requests already use `type=Voice`; do not drop rows on unknown `type` strings (TELUS / RC variants). */
 
   const direction = mapDirection(rec.direction);
   if (!direction) return null;
 
-  const phone = pickCustomerPhone(rec);
-  if (!phone) return null;
+  const phone = pickCustomerPhoneForImport(rec);
 
   const start = rec.startTime ? new Date(rec.startTime) : null;
   if (!start || Number.isNaN(start.getTime())) return null;
