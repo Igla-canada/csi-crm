@@ -2,6 +2,10 @@ import "server-only";
 
 import { CallDirection } from "@/lib/db";
 import { aggregatePathErrorsAreAllRateLimited } from "@/lib/ringcentral/active-calls-error";
+import {
+  pickCustomerPhoneFromRcFromTo,
+  type RcPhoneEndpoint,
+} from "@/lib/ringcentral/customer-phone-from-rc-parties";
 import { getExtensionActiveCallsPollPlan } from "@/lib/ringcentral/env";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
 
@@ -10,14 +14,12 @@ const BETWEEN_EXTENSION_POLL_MS = 800;
 
 const MIN_DIGITS_LOOKUP = 7;
 
-type RcParty = { phoneNumber?: string; extensionNumber?: string; name?: string };
-
 type RcActiveRecord = {
   id?: string;
   sessionId?: string;
   direction?: string;
-  from?: RcParty;
-  to?: RcParty;
+  from?: RcPhoneEndpoint;
+  to?: RcPhoneEndpoint;
   /** Present on many payloads; absent means we cannot infer end state (keep row). */
   telephonyStatus?: string;
   result?: string;
@@ -50,22 +52,6 @@ type RcActiveListResponse = {
   records?: RcActiveRecord[];
 };
 
-function normalizeUsLookup(raw: string): { lookup: string; callLog10: string | null } {
-  let d = raw.replace(/\D/g, "");
-  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
-  if (d.length === 10) return { lookup: d, callLog10: d };
-  if (d.length >= MIN_DIGITS_LOOKUP) return { lookup: d, callLog10: null };
-  if (d.length >= 3 && d.length < MIN_DIGITS_LOOKUP) return { lookup: d, callLog10: null };
-  return { lookup: "", callLog10: null };
-}
-
-function rawPartyDial(p: RcParty | undefined): string {
-  if (!p) return "";
-  const tel = String(p.phoneNumber ?? "").trim();
-  if (tel) return tel;
-  return String(p.extensionNumber ?? "").trim();
-}
-
 function mapDirection(raw: string | undefined): CallDirection | null {
   const d = String(raw ?? "").toLowerCase();
   if (d.includes("inbound")) return CallDirection.INBOUND;
@@ -81,18 +67,7 @@ function pickCustomerParty(
   r: RcActiveRecord,
   direction: CallDirection,
 ): { digits: string; callLog10: string | null; name: string | null } | null {
-  const outbound = direction === CallDirection.OUTBOUND;
-  const primary = outbound ? r.to : r.from;
-  const secondary = outbound ? r.from : r.to;
-
-  for (const party of [primary, secondary]) {
-    const raw = rawPartyDial(party);
-    if (!raw) continue;
-    const { lookup, callLog10 } = normalizeUsLookup(raw);
-    if (lookup.length < 3) continue;
-    return { digits: lookup, callLog10, name: party?.name ?? null };
-  }
-  return null;
+  return pickCustomerPhoneFromRcFromTo(direction, r.from, r.to);
 }
 
 function formatPhoneDisplay(digits: string, callLog10: string | null): string {
