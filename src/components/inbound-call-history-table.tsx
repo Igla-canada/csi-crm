@@ -24,6 +24,7 @@ import {
 } from "@/lib/live-dock-open-log-client";
 import { formatInboundCallHistoryDuration } from "@/lib/inbound-call-history-format";
 import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
+import { Pause, Play } from "lucide-react";
 
 function formatWhen(iso: string) {
   return format(parseISO(iso), "MMM d, yyyy · h:mm a");
@@ -33,6 +34,121 @@ function recordingLabel(count: number): { text: string; title: string } {
   if (count <= 0) return { text: "—", title: "No recording on file" };
   if (count === 1) return { text: "1", title: "1 recording" };
   return { text: String(count), title: `${count} recordings` };
+}
+
+/** Only one history-table recording plays at a time (new play pauses the previous). */
+let lastHistoryTableAudio: HTMLAudioElement | null = null;
+
+function pauseOtherHistoryTableRecordings(current: HTMLAudioElement) {
+  if (lastHistoryTableAudio && lastHistoryTableAudio !== current) {
+    lastHistoryTableAudio.pause();
+  }
+  lastHistoryTableAudio = current;
+}
+
+function recordingStreamUrl(callLogId: string, segmentIndex: number): string {
+  const id = encodeURIComponent(callLogId);
+  return segmentIndex === 0
+    ? `/api/ringcentral/recording?callLogId=${id}`
+    : `/api/ringcentral/recording?callLogId=${id}&recordingIndex=${segmentIndex}`;
+}
+
+function InboundHistoryRecordingSegmentButton({
+  callLogId,
+  segmentIndex,
+  totalSegments,
+}: {
+  callLogId: string;
+  segmentIndex: number;
+  totalSegments: number;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    return () => {
+      if (!el) return;
+      el.pause();
+      if (lastHistoryTableAudio === el) lastHistoryTableAudio = null;
+    };
+  }, []);
+
+  const ariaPlay =
+    totalSegments <= 1
+      ? "Play call recording"
+      : `Play recording part ${segmentIndex + 1} of ${totalSegments}`;
+  const ariaPause =
+    totalSegments <= 1 ? "Pause call recording" : `Pause recording part ${segmentIndex + 1}`;
+
+  return (
+    <>
+      <audio
+        ref={audioRef}
+        src={recordingStreamUrl(callLogId, segmentIndex)}
+        preload="none"
+        onPlay={() => {
+          const el = audioRef.current;
+          if (el) pauseOtherHistoryTableRecordings(el);
+          setPlaying(true);
+        }}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+      />
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
+        aria-label={playing ? ariaPause : ariaPlay}
+        title={playing ? ariaPause : ariaPlay}
+        onClick={() => {
+          const el = audioRef.current;
+          if (!el) return;
+          if (playing) el.pause();
+          else void el.play().catch(() => {});
+        }}
+      >
+        {playing ? (
+          <Pause className="h-3 w-3" aria-hidden />
+        ) : (
+          <Play className="ml-px h-3 w-3" aria-hidden />
+        )}
+      </button>
+    </>
+  );
+}
+
+function InboundHistoryRecordingCell({
+  callLogId,
+  recordingCount,
+}: {
+  callLogId: string;
+  recordingCount: number;
+}) {
+  const n = Math.max(0, Math.floor(recordingCount));
+  if (n <= 0) {
+    return <span className="text-slate-500">—</span>;
+  }
+
+  const { title } = recordingLabel(n);
+
+  return (
+    <div className="flex flex-col items-center gap-1" title={title}>
+      <div className="flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5">
+        {Array.from({ length: n }, (_, segmentIndex) => (
+          <span key={segmentIndex} className="inline-flex items-center gap-0.5">
+            {n > 1 && (
+              <span className="text-[10px] font-semibold tabular-nums text-slate-500">{segmentIndex + 1}</span>
+            )}
+            <InboundHistoryRecordingSegmentButton
+              callLogId={callLogId}
+              segmentIndex={segmentIndex}
+              totalSegments={n}
+            />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function inboundHistoryApiUrl(dateFrom: string, dateTo: string): string {
@@ -384,8 +500,6 @@ export function InboundCallHistoryTable({
             );
             const openLogDisabled = row.openLogDisabled || dockSuppressed;
 
-            const rec = recordingLabel(row.recordingCount ?? 0);
-
             return (
               <tr key={row.id} className="border-b border-slate-100 last:border-0">
                 <td className="py-3 pr-4 align-top text-slate-700">{formatWhen(row.happenedAt)}</td>
@@ -397,16 +511,8 @@ export function InboundCallHistoryTable({
                 <td className="py-3 pr-3 align-top tabular-nums text-slate-700">
                   {formatInboundCallHistoryDuration(row.durationSeconds ?? null)}
                 </td>
-                <td className="py-3 pr-3 align-top text-center tabular-nums text-slate-800" title={rec.title}>
-                  <span
-                    className={
-                      row.recordingCount > 0
-                        ? "inline-flex min-w-[1.25rem] justify-center rounded-md bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-800"
-                        : ""
-                    }
-                  >
-                    {rec.text}
-                  </span>
+                <td className="py-3 pr-3 align-top text-center text-slate-800">
+                  <InboundHistoryRecordingCell callLogId={row.id} recordingCount={row.recordingCount ?? 0} />
                 </td>
                 <td className="py-3 pr-4 align-top font-medium text-slate-900">
                   <Link
