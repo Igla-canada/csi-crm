@@ -1,23 +1,42 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 
 import { Card, SectionHeading } from "@/components/app-shell";
 import { CallsListRefreshButton } from "@/components/calls-list-refresh-button";
 import { InboundCallHistoryTable } from "@/components/inbound-call-history-table";
 import { getCurrentUser } from "@/lib/auth";
-import { isCallHistoryOpenLogDisabled, listInboundCallHistory } from "@/lib/crm";
+import {
+  isCallHistoryOpenLogDisabled,
+  listInboundCallHistory,
+  resolveInboundCallHistoryHappenedAtRange,
+  type InboundCallHistoryDateFilter,
+} from "@/lib/crm";
 import type { InboundCallHistoryRowDto } from "@/lib/inbound-call-history-dto";
+import { getAppTimezone } from "@/lib/google-calendar/env";
 import { getUserCapabilities } from "@/lib/user-privileges";
 
 export const dynamic = "force-dynamic";
 
-export default async function CallHistoryPage() {
+export default async function CallHistoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ dateFrom?: string; dateTo?: string }>;
+}) {
   const user = await getCurrentUser();
   const caps = getUserCapabilities(user);
   if (!caps.canViewCallsSection) {
     redirect("/");
   }
 
-  const rows = await listInboundCallHistory();
+  const sp = await searchParams;
+  const rawFrom = typeof sp.dateFrom === "string" ? sp.dateFrom : undefined;
+  const rawTo = typeof sp.dateTo === "string" ? sp.dateTo : undefined;
+  const filter: InboundCallHistoryDateFilter | null =
+    rawFrom || rawTo ? { dateFrom: rawFrom ?? null, dateTo: rawTo ?? null } : null;
+  const effectiveFilter =
+    filter && resolveInboundCallHistoryHappenedAtRange(filter) != null ? filter : null;
+
+  const rows = await listInboundCallHistory(effectiveFilter);
   const initialRows: InboundCallHistoryRowDto[] = rows.map((r) => ({
     id: r.id,
     clientId: r.clientId,
@@ -49,7 +68,16 @@ export default async function CallHistoryPage() {
       />
 
       <Card>
-        <InboundCallHistoryTable initialRows={initialRows} />
+        <Suspense
+          fallback={<p className="px-2 py-8 text-center text-sm text-slate-600">Loading call history…</p>}
+        >
+          <InboundCallHistoryTable
+            initialRows={initialRows}
+            initialDateFrom={effectiveFilter?.dateFrom?.trim() ?? ""}
+            initialDateTo={effectiveFilter?.dateTo?.trim() ?? ""}
+            dateFilterTimezone={getAppTimezone()}
+          />
+        </Suspense>
       </Card>
     </div>
   );

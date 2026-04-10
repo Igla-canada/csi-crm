@@ -2208,17 +2208,67 @@ export type InboundCallHistoryRow = {
 };
 
 const INBOUND_CALL_HISTORY_LIMIT = 200;
+const INBOUND_CALL_HISTORY_LIMIT_FILTERED = 500;
 
-export async function listInboundCallHistory(): Promise<InboundCallHistoryRow[]> {
-  const { data: rows, error } = await sb()
+export type InboundCallHistoryDateFilter = {
+  /** `YYYY-MM-DD` interpreted in {@link getAppTimezone} */
+  dateFrom?: string | null;
+  dateTo?: string | null;
+};
+
+/** Returns ISO bounds for `happenedAt` filter, or `null` when no valid filter. */
+export function resolveInboundCallHistoryHappenedAtRange(
+  filter: InboundCallHistoryDateFilter | null | undefined,
+): { gte?: string; lte?: string } | null {
+  const fromYmd = filter?.dateFrom?.trim() ?? "";
+  const toYmd = filter?.dateTo?.trim() ?? "";
+  if (!fromYmd && !toYmd) return null;
+  const ymdOk = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  if ((fromYmd && !ymdOk(fromYmd)) || (toYmd && !ymdOk(toYmd))) {
+    return null;
+  }
+  const tz = getAppTimezone();
+  const startOfYmd = (ymd: string) => {
+    const [y, mo, d] = ymd.split("-").map(Number);
+    const anchor = new TZDate(y, mo - 1, d, 12, 0, 0, 0, tz);
+    return new Date(startOfDay(anchor).getTime()).toISOString();
+  };
+  const endOfYmd = (ymd: string) => {
+    const [y, mo, d] = ymd.split("-").map(Number);
+    const anchor = new TZDate(y, mo - 1, d, 12, 0, 0, 0, tz);
+    return new Date(endOfDay(anchor).getTime()).toISOString();
+  };
+  if (fromYmd && toYmd) {
+    const gte = startOfYmd(fromYmd);
+    const lte = endOfYmd(toYmd);
+    if (gte > lte) return null;
+    return { gte, lte };
+  }
+  if (fromYmd) return { gte: startOfYmd(fromYmd) };
+  return { lte: endOfYmd(toYmd) };
+}
+
+export async function listInboundCallHistory(
+  filter?: InboundCallHistoryDateFilter | null,
+): Promise<InboundCallHistoryRow[]> {
+  const range = resolveInboundCallHistoryHappenedAtRange(filter ?? null);
+  const limit =
+    range != null ? INBOUND_CALL_HISTORY_LIMIT_FILTERED : INBOUND_CALL_HISTORY_LIMIT;
+
+  let q = sb()
     .from(tables.CallLog)
     .select(
       "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId",
     )
-    .eq("direction", "INBOUND")
+    .eq("direction", "INBOUND");
+
+  if (range?.gte) q = q.gte("happenedAt", range.gte);
+  if (range?.lte) q = q.lte("happenedAt", range.lte);
+
+  const { data: rows, error } = await q
     .order("happenedAt", { ascending: false })
     .order("id", { ascending: false })
-    .limit(INBOUND_CALL_HISTORY_LIMIT);
+    .limit(limit);
   if (error) throw error;
   const list = rows ?? [];
   if (!list.length) return [];

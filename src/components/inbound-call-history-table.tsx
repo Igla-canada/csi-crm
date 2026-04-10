@@ -2,8 +2,15 @@
 
 import Link from "next/link";
 import { format, parseISO } from "date-fns";
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CallHistoryOpenLogButton } from "@/components/call-history-open-log-button";
 import { useLiveUiSync } from "@/components/live-ui-sync";
@@ -18,6 +25,14 @@ import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeho
 
 function formatWhen(iso: string) {
   return format(parseISO(iso), "MMM d, yyyy · h:mm a");
+}
+
+function inboundHistoryApiUrl(dateFrom: string, dateTo: string): string {
+  const params = new URLSearchParams();
+  if (dateFrom.trim()) params.set("dateFrom", dateFrom.trim());
+  if (dateTo.trim()) params.set("dateTo", dateTo.trim());
+  const q = params.toString();
+  return q ? `/api/calls/inbound-history?${q}` : "/api/calls/inbound-history";
 }
 
 function normPhoneDigits(raw: string | null | undefined): string {
@@ -59,11 +74,37 @@ function LiveDockSyntheticOpenLogButton({ dock }: { dock: ActiveDockCallSnapshot
   );
 }
 
-export function InboundCallHistoryTable({ initialRows }: { initialRows: InboundCallHistoryRowDto[] }) {
+type InboundCallHistoryTableProps = {
+  initialRows: InboundCallHistoryRowDto[];
+  /** `YYYY-MM-DD` from URL / server (shop timezone). */
+  initialDateFrom?: string;
+  initialDateTo?: string;
+  dateFilterTimezone: string;
+};
+
+export function InboundCallHistoryTable({
+  initialRows,
+  initialDateFrom = "",
+  initialDateTo = "",
+  dateFilterTimezone,
+}: InboundCallHistoryTableProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const urlDateFrom = searchParams.get("dateFrom") ?? "";
+  const urlDateTo = searchParams.get("dateTo") ?? "";
+
   const { liveUiSyncEnabled, activeCallPollSec, refreshIntervalSec, activeDockCalls } = useLiveUiSync();
   const [rows, setRows] = useState<InboundCallHistoryRowDto[]>(initialRows);
+  const [dateFrom, setDateFrom] = useState(initialDateFrom || urlDateFrom);
+  const [dateTo, setDateTo] = useState(initialDateTo || urlDateTo);
   const fetchSeqRef = useRef(0);
   const [, setSuppressTick] = useState(0);
+
+  useEffect(() => {
+    setDateFrom(urlDateFrom);
+    setDateTo(urlDateTo);
+  }, [urlDateFrom, urlDateTo]);
 
   const pollSec = refreshIntervalSec > 0 ? refreshIntervalSec : activeCallPollSec;
   const pollMs = Math.max(pollSec * 1000, 8000);
@@ -71,7 +112,7 @@ export function InboundCallHistoryTable({ initialRows }: { initialRows: InboundC
   const fetchRows = useCallback(async () => {
     const seq = ++fetchSeqRef.current;
     try {
-      const res = await fetch("/api/calls/inbound-history", { credentials: "include" });
+      const res = await fetch(inboundHistoryApiUrl(dateFrom, dateTo), { credentials: "include" });
       const data = (await res.json()) as { rows?: InboundCallHistoryRowDto[]; error?: string };
       if (!res.ok || !Array.isArray(data.rows)) return;
       if (seq !== fetchSeqRef.current) return;
@@ -79,11 +120,53 @@ export function InboundCallHistoryTable({ initialRows }: { initialRows: InboundC
     } catch {
       /* keep last good snapshot */
     }
-  }, []);
+  }, [dateFrom, dateTo]);
+
+  const applyDateFilter = useCallback(() => {
+    const params = new URLSearchParams();
+    if (dateFrom.trim()) params.set("dateFrom", dateFrom.trim());
+    if (dateTo.trim()) params.set("dateTo", dateTo.trim());
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname);
+    const from = dateFrom.trim();
+    const to = dateTo.trim();
+    const seq = ++fetchSeqRef.current;
+    void (async () => {
+      try {
+        const res = await fetch(inboundHistoryApiUrl(from, to), { credentials: "include" });
+        const data = (await res.json()) as { rows?: InboundCallHistoryRowDto[]; error?: string };
+        if (!res.ok || !Array.isArray(data.rows)) return;
+        if (seq !== fetchSeqRef.current) return;
+        setRows(data.rows);
+      } catch {
+        /* keep */
+      }
+    })();
+  }, [dateFrom, dateTo, pathname, router]);
+
+  const clearDateFilter = useCallback(() => {
+    setDateFrom("");
+    setDateTo("");
+    router.replace(pathname);
+    const seq = ++fetchSeqRef.current;
+    void (async () => {
+      try {
+        const res = await fetch("/api/calls/inbound-history", { credentials: "include" });
+        const data = (await res.json()) as { rows?: InboundCallHistoryRowDto[]; error?: string };
+        if (!res.ok || !Array.isArray(data.rows)) return;
+        if (seq !== fetchSeqRef.current) return;
+        setRows(data.rows);
+      } catch {
+        /* keep */
+      }
+    })();
+  }, [pathname, router]);
 
   useEffect(() => {
     setRows(initialRows);
   }, [initialRows]);
+
+  const dateFilterActive = Boolean(dateFrom.trim() || dateTo.trim());
 
   useEffect(() => {
     if (!liveUiSyncEnabled) return;
@@ -126,11 +209,38 @@ export function InboundCallHistoryTable({ initialRows }: { initialRows: InboundC
   }, [rows, activeDockCalls]);
 
   if (merged.length === 0) {
-    return <p className="text-sm text-slate-600">No inbound calls on file yet.</p>;
+    return (
+      <div className="space-y-4">
+        <DateFilterBar
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          onDateFromChange={setDateFrom}
+          onDateToChange={setDateTo}
+          onApply={applyDateFilter}
+          onClear={clearDateFilter}
+          timezoneLabel={dateFilterTimezone}
+          filterActive={dateFilterActive}
+        />
+        <p className="text-sm text-slate-600">
+          {dateFilterActive ? "No inbound calls in this range." : "No inbound calls on file yet."}
+        </p>
+      </div>
+    );
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="space-y-4">
+      <DateFilterBar
+        dateFrom={dateFrom}
+        dateTo={dateTo}
+        onDateFromChange={setDateFrom}
+        onDateToChange={setDateTo}
+        onApply={applyDateFilter}
+        onClear={clearDateFilter}
+        timezoneLabel={dateFilterTimezone}
+        filterActive={dateFilterActive}
+      />
+      <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -204,6 +314,72 @@ export function InboundCallHistoryTable({ initialRows }: { initialRows: InboundC
           })}
         </tbody>
       </table>
+      </div>
+    </div>
+  );
+}
+
+function DateFilterBar({
+  dateFrom,
+  dateTo,
+  onDateFromChange,
+  onDateToChange,
+  onApply,
+  onClear,
+  timezoneLabel,
+  filterActive,
+}: {
+  dateFrom: string;
+  dateTo: string;
+  onDateFromChange: (v: string) => void;
+  onDateToChange: (v: string) => void;
+  onApply: () => void;
+  onClear: () => void;
+  timezoneLabel: string;
+  filterActive: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-slate-200/90 bg-slate-50/80 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-end">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => onDateFromChange(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => onDateToChange(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={onApply}
+          className="rounded-xl bg-[#1e5ea8] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#17497f]"
+        >
+          Apply
+        </button>
+        {filterActive ? (
+          <button
+            type="button"
+            onClick={onClear}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            Clear
+          </button>
+        ) : null}
+      </div>
+      <p className="text-[11px] leading-snug text-slate-500 sm:ml-auto sm:max-w-[280px] sm:text-right">
+        Dates are calendar days in <span className="font-medium text-slate-600">{timezoneLabel}</span>. For one day, set
+        From and To to the same date. Leave both empty for the latest calls (default list).
+      </p>
     </div>
   );
 }
