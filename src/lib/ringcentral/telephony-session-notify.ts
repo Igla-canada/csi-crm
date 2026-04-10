@@ -72,6 +72,7 @@ function isPartyEnded(p: RcParty): boolean {
     code.includes("disconnect") ||
     code.includes("hang up") ||
     code.includes("terminated") ||
+    code.includes("reject") ||
     code.includes("voice mail") ||
     code.includes("voicemail") ||
     code.includes("fax receive")
@@ -204,12 +205,21 @@ function shouldDropSession(parties: RcParty[]): boolean {
   return parties.every((p) => isPartyEnded(p));
 }
 
-function pickCustomerFromSessionParties(parties: RcParty[]): ReturnType<typeof customerFromParty> | null {
+type CustomerPartyPick = NonNullable<ReturnType<typeof customerFromParty>>;
+
+/**
+ * Multi-leg sessions: the first party with digits is often an internal/outbound leg; inbound call history only
+ * lists INBOUND rows. Prefer any party that maps to INBOUND before OUTBOUND.
+ */
+function pickCustomerFromSessionParties(parties: RcParty[]): CustomerPartyPick | null {
+  const candidates: CustomerPartyPick[] = [];
   for (const p of parties) {
     const c = customerFromParty(p);
-    if (c) return c;
+    if (c) candidates.push(c);
   }
-  return null;
+  if (!candidates.length) return null;
+  const inbound = candidates.find((c) => c.direction === CallDirection.INBOUND);
+  return inbound ?? candidates[0]!;
 }
 
 function webhookStubDispositionFromParties(
@@ -261,9 +271,8 @@ export async function applyRingCentralTelephonyWebhookBody(
       try {
         await importCallLogForTelephonySessionEnd(stub);
       } catch (e) {
-        if (process.env.NODE_ENV === "development") {
-          console.warn("[telephony-webhook] importCallLogForTelephonySessionEnd:", e);
-        }
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[telephony-webhook] importCallLogForTelephonySessionEnd failed:", msg);
       }
       processed += 1;
       continue;

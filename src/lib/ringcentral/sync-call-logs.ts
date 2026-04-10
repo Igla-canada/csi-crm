@@ -346,7 +346,8 @@ function recordMatchesTelephonySession(rec: RcCallRecord, telephonySessionId: st
 }
 
 const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
-const TELEPHONY_END_IMPORT_MAX_PAGES = 14;
+/** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
+const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
 
 /**
  * When a telephony session ends (webhook), try to import the matching account call-log row immediately.
@@ -367,27 +368,35 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
   const dateTo = new Date();
   const dateFrom = subHours(dateTo, TELEPHONY_END_IMPORT_HOURS_BACK);
 
+  const directionFilter =
+    stub.direction === CallDirection.INBOUND
+      ? "Inbound"
+      : stub.direction === CallDirection.OUTBOUND
+        ? "Outbound"
+        : undefined;
+
   let page = 1;
   const perPage = 100;
   let matched: RcCallRecord | null = null;
 
   for (; page <= TELEPHONY_END_IMPORT_MAX_PAGES; page++) {
-    const resp = await platform.get("/restapi/v1.0/account/~/call-log", {
+    const query: Record<string, string | number> = {
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       page,
       perPage,
       type: "Voice",
       view: "Detailed",
-    });
+    };
+    if (directionFilter) query.direction = directionFilter;
+
+    const resp = await platform.get("/restapi/v1.0/account/~/call-log", query);
 
     if (!resp.ok) {
-      if (process.env.NODE_ENV === "development") {
-        const text = await resp.text().catch(() => "");
-        console.warn(
-          `[telephony-session-import] call-log lookup HTTP ${resp.status} for session ${sessionId.slice(0, 24)}… ${text.slice(0, 120)}`,
-        );
-      }
+      const text = await resp.text().catch(() => "");
+      console.warn(
+        `[telephony-session-import] call-log lookup HTTP ${resp.status} for session ${sessionId.slice(0, 24)}… ${text.slice(0, 200)}`,
+      );
       break;
     }
 
