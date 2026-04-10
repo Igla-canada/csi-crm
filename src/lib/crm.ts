@@ -2355,6 +2355,21 @@ function inboundHistoryRecordingCountFromRow(row: Record<string, unknown>): numb
   return uri ? 1 : 0;
 }
 
+const INBOUND_HISTORY_LIST_SELECT_BASE =
+  "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingContentUri";
+
+const INBOUND_HISTORY_LIST_SELECT_WITH_REFS = `${INBOUND_HISTORY_LIST_SELECT_BASE},telephonyRecordingRefs`;
+
+function inboundHistoryListSelectErrorMissingRefsColumn(error: { message?: string; details?: string } | null): boolean {
+  if (!error) return false;
+  const blob = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return (
+    blob.includes("telephonyrecordingrefs") ||
+    (blob.includes("column") && blob.includes("does not exist")) ||
+    blob.includes("42703")
+  );
+}
+
 export async function listInboundCallHistory(
   filter?: InboundCallHistoryDateFilter | null,
 ): Promise<InboundCallHistoryRow[]> {
@@ -2362,42 +2377,42 @@ export async function listInboundCallHistory(
   const limit =
     range != null ? INBOUND_CALL_HISTORY_LIMIT_FILTERED : INBOUND_CALL_HISTORY_LIMIT;
 
-  let q = sb()
-    .from(tables.CallLog)
-    .select(
-      "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingRefs,telephonyRecordingContentUri",
-    )
-    .eq("direction", "INBOUND");
+  const build = (select: string) => {
+    let q = sb().from(tables.CallLog).select(select).eq("direction", "INBOUND");
+    if (range?.gte) q = q.gte("happenedAt", range.gte);
+    if (range?.lte) q = q.lte("happenedAt", range.lte);
+    return q
+      .order("happenedAt", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(limit);
+  };
 
-  if (range?.gte) q = q.gte("happenedAt", range.gte);
-  if (range?.lte) q = q.lte("happenedAt", range.lte);
-
-  const { data: rows, error } = await q
-    .order("happenedAt", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  const list = rows ?? [];
+  let res = await build(INBOUND_HISTORY_LIST_SELECT_WITH_REFS);
+  if (res.error && inboundHistoryListSelectErrorMissingRefsColumn(res.error)) {
+    res = await build(INBOUND_HISTORY_LIST_SELECT_BASE);
+  }
+  if (res.error) throw res.error;
+  const list = (res.data ?? []) as unknown as Array<Record<string, unknown>>;
   if (!list.length) return [];
-  const clientMap = await fetchClientsByIds(list.map((r) => r.clientId as string));
+  const clientMap = await fetchClientsByIds(list.map((r) => String(r.clientId ?? "")));
   return list.map((r) => {
-    const c = clientMap.get(r.clientId as string);
-    const row = r as Record<string, unknown>;
+    const c = clientMap.get(String(r.clientId ?? ""));
+    const row = r;
     const meta =
       row.telephonyMetadata && typeof row.telephonyMetadata === "object" && !Array.isArray(row.telephonyMetadata)
         ? (row.telephonyMetadata as Record<string, unknown>)
         : null;
     return {
-      id: r.id as string,
-      clientId: r.clientId as string,
+      id: String(r.id ?? ""),
+      clientId: String(r.clientId ?? ""),
       clientDisplayName: c?.displayName ?? "Unknown client",
       contactPhone: (r.contactPhone as string | null) ?? null,
       contactName: (r.contactName as string | null) ?? null,
-      happenedAt: toDate(r.happenedAt as string),
+      happenedAt: toDate(String(r.happenedAt ?? "")),
       telephonyDraft: Boolean(r.telephonyDraft),
       summary: String(r.summary ?? ""),
       openedFromCallHistoryAt: r.openedFromCallHistoryAt
-        ? toDate(r.openedFromCallHistoryAt as string)
+        ? toDate(String(r.openedFromCallHistoryAt))
         : null,
       ringCentralCallLogId: (r.ringCentralCallLogId as string | null) ?? null,
       telephonyResult: String((row.telephonyResult as string | null) ?? "").trim() || null,
