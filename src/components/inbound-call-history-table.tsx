@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { format, parseISO } from "date-fns";
+import { TZDate } from "@date-fns/tz";
+import { endOfDay, format, parseISO, startOfDay, subDays } from "date-fns";
 import {
   useCallback,
   useEffect,
@@ -33,6 +34,51 @@ function inboundHistoryApiUrl(dateFrom: string, dateTo: string): string {
   if (dateTo.trim()) params.set("dateTo", dateTo.trim());
   const q = params.toString();
   return q ? `/api/calls/inbound-history?${q}` : "/api/calls/inbound-history";
+}
+
+/** Aligns with server `listInboundCallHistory` (calendar days in APP_TIMEZONE). */
+type InboundHistoryDatePreset = "recent" | "today" | "3d" | "7d" | "14d" | "30d" | "custom";
+
+function ymdInShopTz(instant: Date, tz: string): string {
+  const z = new TZDate(instant.getTime(), tz);
+  const y = z.getFullYear();
+  const m = String(z.getMonth() + 1).padStart(2, "0");
+  const d = String(z.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function presetToDateRange(
+  preset: Exclude<InboundHistoryDatePreset, "recent" | "custom">,
+  tz: string,
+): { from: string; to: string } {
+  const now = new TZDate(Date.now(), tz);
+  const end = endOfDay(now);
+  const todayStart = startOfDay(now);
+  const to = ymdInShopTz(end, tz);
+  if (preset === "today") {
+    return { from: ymdInShopTz(todayStart, tz), to };
+  }
+  const daysBack = preset === "3d" ? 2 : preset === "7d" ? 6 : preset === "14d" ? 13 : 29;
+  const fromDay = startOfDay(subDays(todayStart, daysBack));
+  return { from: ymdInShopTz(fromDay, tz), to };
+}
+
+function detectPresetFromUrl(dateFrom: string, dateTo: string, tz: string): InboundHistoryDatePreset {
+  const f = dateFrom.trim();
+  const t = dateTo.trim();
+  if (!f && !t) return "recent";
+  const keys: Exclude<InboundHistoryDatePreset, "recent" | "custom">[] = [
+    "today",
+    "3d",
+    "7d",
+    "14d",
+    "30d",
+  ];
+  for (const p of keys) {
+    const r = presetToDateRange(p, tz);
+    if (r.from === f && r.to === t) return p;
+  }
+  return "custom";
 }
 
 function normPhoneDigits(raw: string | null | undefined): string {
@@ -98,16 +144,45 @@ export function InboundCallHistoryTable({
   const [rows, setRows] = useState<InboundCallHistoryRowDto[]>(initialRows);
   const [dateFrom, setDateFrom] = useState(initialDateFrom || urlDateFrom);
   const [dateTo, setDateTo] = useState(initialDateTo || urlDateTo);
+  const [preset, setPreset] = useState<InboundHistoryDatePreset>(() =>
+    detectPresetFromUrl(initialDateFrom || urlDateFrom, initialDateTo || urlDateTo, dateFilterTimezone),
+  );
   const fetchSeqRef = useRef(0);
   const [, setSuppressTick] = useState(0);
 
   useEffect(() => {
     setDateFrom(urlDateFrom);
     setDateTo(urlDateTo);
-  }, [urlDateFrom, urlDateTo]);
+    setPreset(detectPresetFromUrl(urlDateFrom, urlDateTo, dateFilterTimezone));
+  }, [urlDateFrom, urlDateTo, dateFilterTimezone]);
 
   const pollSec = refreshIntervalSec > 0 ? refreshIntervalSec : activeCallPollSec;
   const pollMs = Math.max(pollSec * 1000, 8000);
+
+  const pushRangeToUrlAndFetch = useCallback(
+    (from: string, to: string) => {
+      const fi = from.trim();
+      const te = to.trim();
+      const params = new URLSearchParams();
+      if (fi) params.set("dateFrom", fi);
+      if (te) params.set("dateTo", te);
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname);
+      const seq = ++fetchSeqRef.current;
+      void (async () => {
+        try {
+          const res = await fetch(inboundHistoryApiUrl(fi, te), { credentials: "include" });
+          const data = (await res.json()) as { rows?: InboundCallHistoryRowDto[]; error?: string };
+          if (!res.ok || !Array.isArray(data.rows)) return;
+          if (seq !== fetchSeqRef.current) return;
+          setRows(data.rows);
+        } catch {
+          /* keep */
+        }
+      })();
+    },
+    [pathname, router],
+  );
 
   const fetchRows = useCallback(async () => {
     const seq = ++fetchSeqRef.current;
@@ -122,45 +197,39 @@ export function InboundCallHistoryTable({
     }
   }, [dateFrom, dateTo]);
 
-  const applyDateFilter = useCallback(() => {
-    const params = new URLSearchParams();
-    if (dateFrom.trim()) params.set("dateFrom", dateFrom.trim());
-    if (dateTo.trim()) params.set("dateTo", dateTo.trim());
-    const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname);
-    const from = dateFrom.trim();
-    const to = dateTo.trim();
-    const seq = ++fetchSeqRef.current;
-    void (async () => {
-      try {
-        const res = await fetch(inboundHistoryApiUrl(from, to), { credentials: "include" });
-        const data = (await res.json()) as { rows?: InboundCallHistoryRowDto[]; error?: string };
-        if (!res.ok || !Array.isArray(data.rows)) return;
-        if (seq !== fetchSeqRef.current) return;
-        setRows(data.rows);
-      } catch {
-        /* keep */
+  const applyCustomRange = useCallback(() => {
+    pushRangeToUrlAndFetch(dateFrom, dateTo);
+  }, [dateFrom, dateTo, pushRangeToUrlAndFetch]);
+
+  const handlePresetChange = useCallback(
+    (val: InboundHistoryDatePreset) => {
+      if (val === "recent") {
+        pushRangeToUrlAndFetch("", "");
+        return;
       }
-    })();
-  }, [dateFrom, dateTo, pathname, router]);
+      if (val === "custom") {
+        setPreset("custom");
+        return;
+      }
+      const r = presetToDateRange(val, dateFilterTimezone);
+      pushRangeToUrlAndFetch(r.from, r.to);
+    },
+    [dateFilterTimezone, pushRangeToUrlAndFetch],
+  );
 
   const clearDateFilter = useCallback(() => {
-    setDateFrom("");
-    setDateTo("");
-    router.replace(pathname);
-    const seq = ++fetchSeqRef.current;
-    void (async () => {
-      try {
-        const res = await fetch("/api/calls/inbound-history", { credentials: "include" });
-        const data = (await res.json()) as { rows?: InboundCallHistoryRowDto[]; error?: string };
-        if (!res.ok || !Array.isArray(data.rows)) return;
-        if (seq !== fetchSeqRef.current) return;
-        setRows(data.rows);
-      } catch {
-        /* keep */
-      }
-    })();
-  }, [pathname, router]);
+    handlePresetChange("recent");
+  }, [handlePresetChange]);
+
+  const onDateFromChangeWrapped = useCallback((v: string) => {
+    setPreset("custom");
+    setDateFrom(v);
+  }, []);
+
+  const onDateToChangeWrapped = useCallback((v: string) => {
+    setPreset("custom");
+    setDateTo(v);
+  }, []);
 
   useEffect(() => {
     setRows(initialRows);
@@ -212,11 +281,13 @@ export function InboundCallHistoryTable({
     return (
       <div className="space-y-4">
         <DateFilterBar
+          preset={preset}
+          onPresetChange={handlePresetChange}
           dateFrom={dateFrom}
           dateTo={dateTo}
-          onDateFromChange={setDateFrom}
-          onDateToChange={setDateTo}
-          onApply={applyDateFilter}
+          onDateFromChange={onDateFromChangeWrapped}
+          onDateToChange={onDateToChangeWrapped}
+          onApplyCustom={applyCustomRange}
           onClear={clearDateFilter}
           timezoneLabel={dateFilterTimezone}
           filterActive={dateFilterActive}
@@ -231,11 +302,13 @@ export function InboundCallHistoryTable({
   return (
     <div className="space-y-4">
       <DateFilterBar
+        preset={preset}
+        onPresetChange={handlePresetChange}
         dateFrom={dateFrom}
         dateTo={dateTo}
-        onDateFromChange={setDateFrom}
-        onDateToChange={setDateTo}
-        onApply={applyDateFilter}
+        onDateFromChange={onDateFromChangeWrapped}
+        onDateToChange={onDateToChangeWrapped}
+        onApplyCustom={applyCustomRange}
         onClear={clearDateFilter}
         timezoneLabel={dateFilterTimezone}
         filterActive={dateFilterActive}
@@ -320,65 +393,91 @@ export function InboundCallHistoryTable({
 }
 
 function DateFilterBar({
+  preset,
+  onPresetChange,
   dateFrom,
   dateTo,
   onDateFromChange,
   onDateToChange,
-  onApply,
+  onApplyCustom,
   onClear,
   timezoneLabel,
   filterActive,
 }: {
+  preset: InboundHistoryDatePreset;
+  onPresetChange: (p: InboundHistoryDatePreset) => void;
   dateFrom: string;
   dateTo: string;
   onDateFromChange: (v: string) => void;
   onDateToChange: (v: string) => void;
-  onApply: () => void;
+  onApplyCustom: () => void;
   onClear: () => void;
   timezoneLabel: string;
   filterActive: boolean;
 }) {
+  const showCustom = preset === "custom";
+
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-slate-200/90 bg-slate-50/80 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-end">
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => onDateFromChange(e.target.value)}
+      <div className="flex w-full min-w-0 flex-col gap-3 sm:w-auto">
+        <label className="flex max-w-xs flex-col gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Range</span>
+          <select
+            value={preset}
+            onChange={(e) => onPresetChange(e.target.value as InboundHistoryDatePreset)}
             className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm"
-          />
+          >
+            <option value="recent">Latest calls (default)</option>
+            <option value="today">Today</option>
+            <option value="3d">Last 3 days</option>
+            <option value="7d">Last 7 days</option>
+            <option value="14d">Last 2 weeks</option>
+            <option value="30d">Last 30 days</option>
+            <option value="custom">Custom…</option>
+          </select>
         </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => onDateToChange(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm"
-          />
-        </label>
-        <button
-          type="button"
-          onClick={onApply}
-          className="rounded-xl bg-[#1e5ea8] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#17497f]"
-        >
-          Apply
-        </button>
+        {showCustom ? (
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => onDateFromChange(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => onDateToChange(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={onApplyCustom}
+              className="rounded-xl bg-[#1e5ea8] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[#17497f]"
+            >
+              Apply
+            </button>
+          </div>
+        ) : null}
         {filterActive ? (
           <button
             type="button"
             onClick={onClear}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            className="w-fit rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
           >
             Clear
           </button>
         ) : null}
       </div>
       <p className="text-[11px] leading-snug text-slate-500 sm:ml-auto sm:max-w-[280px] sm:text-right">
-        Dates are calendar days in <span className="font-medium text-slate-600">{timezoneLabel}</span>. For one day, set
-        From and To to the same date. Leave both empty for the latest calls (default list).
+        Presets use calendar days in <span className="font-medium text-slate-600">{timezoneLabel}</span>, ending today.
+        Choose Custom to pick exact From/To dates. Latest calls leaves the range open (default list).
       </p>
     </div>
   );
