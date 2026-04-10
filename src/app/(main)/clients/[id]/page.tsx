@@ -418,7 +418,15 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                                     ]
                                   : [],
                             telephonyDraft: call.telephonyDraft,
-                            hasTelephonyRecording: Boolean(call.telephonyRecordingContentUri?.trim()),
+                            ...(() => {
+                              const refCount = call.telephonyRecordingRefs?.length ?? 0;
+                              const hasLegacyUri = Boolean(call.telephonyRecordingContentUri?.trim());
+                              const segmentCount = refCount > 0 ? refCount : hasLegacyUri ? 1 : 0;
+                              return {
+                                hasTelephonyRecording: segmentCount > 0,
+                                telephonyRecordingSegmentCount: segmentCount > 0 ? segmentCount : undefined,
+                              };
+                            })(),
                             telephonyTranscript: call.telephonyTranscript,
                             telephonyAiSummary: call.telephonyAiSummary,
                             telephonyAiPending: Boolean(call.telephonyAiJobId?.trim()),

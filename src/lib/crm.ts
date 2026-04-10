@@ -140,6 +140,8 @@ export type CallLogWithRelations = {
   ringCentralCallLogId: string | null;
   telephonyRecordingId: string | null;
   telephonyRecordingContentUri: string | null;
+  /** RingCentral recording segments (hold / transfer legs), when more than one file exists. */
+  telephonyRecordingRefs: Array<{ id: string; contentUri: string }> | null;
   telephonyMetadata: Record<string, unknown> | null;
   telephonyTranscript: string | null;
   telephonyAiSummary: string | null;
@@ -414,6 +416,34 @@ function resolveCallLogSourceDisplay(raw: string | null, leadLabelByCode: Map<st
   return leadLabelByCode.get(raw) ?? raw;
 }
 
+function parseTelephonyRecordingRefsJson(raw: unknown): Array<{ id: string; contentUri: string }> | null {
+  if (!Array.isArray(raw)) return null;
+  const out: Array<{ id: string; contentUri: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const id = String(o.id ?? "").trim();
+    const contentUri = String(o.contentUri ?? "").trim();
+    if (id && contentUri) out.push({ id, contentUri });
+  }
+  return out.length > 0 ? out : null;
+}
+
+function dedupeTelephonyRecordingRefs(
+  refs: Array<{ id: string; contentUri: string }>,
+): Array<{ id: string; contentUri: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ id: string; contentUri: string }> = [];
+  for (const r of refs) {
+    const id = String(r.id ?? "").trim();
+    const contentUri = String(r.contentUri ?? "").trim();
+    if (!id || !contentUri || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, contentUri });
+  }
+  return out;
+}
+
 async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLogWithRelations[]> {
   if (!rows.length) return [];
   const clientIds = rows.map((r) => r.clientId as string);
@@ -486,6 +516,7 @@ async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLog
       ringCentralCallLogId: (base.ringCentralCallLogId as string | null) ?? null,
       telephonyRecordingId: (base.telephonyRecordingId as string | null) ?? null,
       telephonyRecordingContentUri: (base.telephonyRecordingContentUri as string | null) ?? null,
+      telephonyRecordingRefs: parseTelephonyRecordingRefsJson(base.telephonyRecordingRefs),
       telephonyMetadata:
         base.telephonyMetadata && typeof base.telephonyMetadata === "object" && !Array.isArray(base.telephonyMetadata)
           ? (base.telephonyMetadata as Record<string, unknown>)
@@ -1270,6 +1301,13 @@ export async function getClientsOverview(): Promise<ClientListRow[]> {
     const recordingUri = latestLog
       ? String((latestLog as { telephonyRecordingContentUri?: string | null }).telephonyRecordingContentUri ?? "").trim()
       : "";
+    const recordingRefsLen = (() => {
+      if (!latestLog) return 0;
+      const refs = parseTelephonyRecordingRefsJson(
+        (latestLog as { telephonyRecordingRefs?: unknown }).telephonyRecordingRefs,
+      );
+      return refs?.length ?? 0;
+    })();
 
     return {
       ...c,
@@ -1283,7 +1321,7 @@ export async function getClientsOverview(): Promise<ClientListRow[]> {
         followUpAt: log.followUpAt ? toDate(log.followUpAt as string) : null,
         createdAt: toDate(log.createdAt as string),
       })),
-      latestCallHasRecording: Boolean(recordingUri),
+      latestCallHasRecording: Boolean(recordingUri) || recordingRefsLen > 0,
       latestTelephonyResult: latestLog
         ? (String((latestLog as { telephonyResult?: string | null }).telephonyResult ?? "").trim() || null)
         : null,
@@ -2248,6 +2286,39 @@ export function resolveInboundCallHistoryHappenedAtRange(
   return { lte: endOfYmd(toYmd) };
 }
 
+/** Max RingCentral query span when syncing from inbound call history (abuse / API limits). */
+const MAX_INBOUND_HISTORY_RC_SYNC_SPAN_MS = 31 * 24 * 60 * 60 * 1000;
+
+/**
+ * Maps the same date filter as inbound call history to a UTC window for RingCentral call-log API.
+ * Returns `null` when there is no date filter (caller should use rolling `hoursBack` sync instead).
+ */
+export function ringCentralSyncWindowForInboundHistoryFilter(
+  filter: InboundCallHistoryDateFilter | null | undefined,
+): { from: Date; to: Date } | null {
+  const r = resolveInboundCallHistoryHappenedAtRange(filter ?? null);
+  if (!r) return null;
+  const nowMs = Date.now();
+  let startMs: number;
+  let endMs: number;
+  if (r.gte != null && r.lte != null) {
+    startMs = new Date(r.gte).getTime();
+    endMs = new Date(r.lte).getTime();
+  } else if (r.gte != null) {
+    startMs = new Date(r.gte).getTime();
+    endMs = nowMs;
+  } else {
+    endMs = Math.min(new Date(r.lte!).getTime(), nowMs);
+    startMs = endMs - 14 * 24 * 60 * 60 * 1000;
+  }
+  if (startMs > endMs) return null;
+  endMs = Math.min(endMs, nowMs);
+  if (endMs - startMs > MAX_INBOUND_HISTORY_RC_SYNC_SPAN_MS) {
+    startMs = endMs - MAX_INBOUND_HISTORY_RC_SYNC_SPAN_MS;
+  }
+  return { from: new Date(startMs), to: new Date(endMs) };
+}
+
 export async function listInboundCallHistory(
   filter?: InboundCallHistoryDateFilter | null,
 ): Promise<InboundCallHistoryRow[]> {
@@ -2395,7 +2466,10 @@ export type RingCentralImportedCall = {
   /** Stored on `CallLog.contactPhone` when exactly 10 digits; otherwise null. */
   contactPhone10: string | null;
   contactName: string;
+  /** First segment — matches `telephonyRecordingId` / `telephonyRecordingContentUri`. */
   recording?: { id: string; contentUri: string };
+  /** All distinct recording segments (hold, transfer, multi-leg). */
+  recordings?: Array<{ id: string; contentUri: string }>;
   metadata: Record<string, unknown>;
   /** Carrier disposition (e.g. Voicemail, Missed) when present on the call-log record. */
   telephonyResult: string | null;
@@ -2634,9 +2708,16 @@ export async function upsertCallLogFromRingCentralImport(
   }
 
   const productQuoteLines = [{ product: "GENERAL", priceText: null as string | null }];
-  const telephonyPayload = {
-    telephonyRecordingId: row.recording?.id ?? null,
-    telephonyRecordingContentUri: row.recording?.contentUri ?? null,
+  const persistedRefs =
+    row.recordings && row.recordings.length > 0
+      ? dedupeTelephonyRecordingRefs(row.recordings)
+      : row.recording?.id && row.recording.contentUri
+        ? dedupeTelephonyRecordingRefs([row.recording])
+        : null;
+  const insertTelephonyFields = {
+    telephonyRecordingId: persistedRefs?.[0]?.id ?? null,
+    telephonyRecordingContentUri: persistedRefs?.[0]?.contentUri ?? null,
+    telephonyRecordingRefs: persistedRefs,
     telephonyMetadata: row.metadata,
     telephonyResult: row.telephonyResult,
     telephonyCallbackPending: row.telephonyCallbackPending,
@@ -2644,12 +2725,25 @@ export async function upsertCallLogFromRingCentralImport(
 
   if (existing) {
     const patch: Record<string, unknown> = {
-      ...telephonyPayload,
+      telephonyMetadata: row.metadata,
+      telephonyResult: row.telephonyResult,
+      telephonyCallbackPending: row.telephonyCallbackPending,
       direction: row.direction,
       happenedAt: row.happenedAt.toISOString(),
       contactPhone: row.contactPhone10,
       contactName: row.contactName,
     };
+    if (row.recordings !== undefined) {
+      const refs = row.recordings.length ? dedupeTelephonyRecordingRefs(row.recordings) : null;
+      patch.telephonyRecordingRefs = refs;
+      patch.telephonyRecordingId = refs?.[0]?.id ?? null;
+      patch.telephonyRecordingContentUri = refs?.[0]?.contentUri ?? null;
+    } else if (row.recording) {
+      const one = dedupeTelephonyRecordingRefs([row.recording]);
+      patch.telephonyRecordingRefs = one;
+      patch.telephonyRecordingId = one[0]?.id ?? null;
+      patch.telephonyRecordingContentUri = one[0]?.contentUri ?? null;
+    }
     if (!existing.telephonyDraft) {
       patch.telephonyCallbackPending = false;
     }
@@ -2704,7 +2798,7 @@ export async function upsertCallLogFromRingCentralImport(
     createdAt: nowIso(),
     ringCentralCallLogId: row.ringCentralCallLogId,
     telephonyDraft: true,
-    ...telephonyPayload,
+    ...insertTelephonyFields,
   });
   if (iErr) throw iErr;
   const reconcileIds = await collectClientIdsForTelephonyReconciliation(row, clientId);

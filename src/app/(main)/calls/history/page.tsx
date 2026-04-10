@@ -63,8 +63,16 @@ export default async function CallHistoryPage({
       <SectionHeading
         eyebrow="Calls"
         title="Inbound call history"
-        text="Newest first — like a phone recents list. With Live sync on, this list re-fetches from the database on the same interval as the header (it does not pull RingCentral by itself; new calls appear after sync imports them). Use Open log to jump to the client and complete a RingCentral stub, or review a manual inbound log once."
-        aside={<CallsListRefreshButton />}
+        text="Newest first — like a phone recents list. With Live sync on, this list re-fetches from the database on the same interval as the header. Use Refresh list to pull RingCentral for the selected date range (or the last 48 hours when no range), then reload. Open log jumps to the client to complete a RingCentral stub or review a manual inbound log."
+        aside={
+          <Suspense
+            fallback={
+              <div className="h-10 w-[7.5rem] animate-pulse rounded-xl bg-slate-100" aria-hidden />
+            }
+          >
+            <CallsListRefreshButton />
+          </Suspense>
+        }
       />
 
       <Card>

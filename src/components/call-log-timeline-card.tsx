@@ -70,6 +70,8 @@ export type CallLogCardSnapshot = {
   /** RingCentral (or other telephony) draft stub — staff should complete fields. */
   telephonyDraft?: boolean;
   hasTelephonyRecording?: boolean;
+  /** How many distinct recording files to play (hold/transfer segments). */
+  telephonyRecordingSegmentCount?: number;
   telephonyTranscript?: string | null;
   telephonyAiSummary?: string | null;
   /** Async AI job in flight (transcript not yet stored). */
@@ -105,9 +107,20 @@ function fieldOrDash(value: string) {
 
 const PLAYBACK_RATES = [1, 1.5, 2] as const;
 
-function TelephonyRecordingPlayer({ callLogId }: { callLogId: string }) {
+function TelephonyRecordingPlayer({
+  callLogId,
+  recordingIndex = 0,
+}: {
+  callLogId: string;
+  recordingIndex?: number;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
+
+  const src =
+    recordingIndex > 0
+      ? `/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}&recordingIndex=${recordingIndex}`
+      : `/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}`;
 
   useEffect(() => {
     const el = audioRef.current;
@@ -144,11 +157,12 @@ function TelephonyRecordingPlayer({ callLogId }: { callLogId: string }) {
         ))}
       </div>
       <audio
+        key={src}
         ref={audioRef}
         controls
         preload="metadata"
         className="h-9 w-full max-w-md"
-        src={`/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}`}
+        src={src}
         onLoadedMetadata={(e) => {
           e.currentTarget.playbackRate = playbackRate;
         }}
@@ -768,13 +782,25 @@ export function CallLogTimelineCard({
             {snapshot.hasTelephonyRecording ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Recording</p>
-                <TelephonyRecordingPlayer callLogId={snapshot.id} />
+                {Array.from(
+                  { length: Math.max(1, snapshot.telephonyRecordingSegmentCount ?? 1) },
+                  (_, i) => (
+                    <div key={i} className={i > 0 ? "mt-4 border-t border-slate-200/90 pt-4" : ""}>
+                      {(snapshot.telephonyRecordingSegmentCount ?? 1) > 1 ? (
+                        <p className="mb-2 text-[11px] font-medium text-slate-600">
+                          Part {i + 1} of {snapshot.telephonyRecordingSegmentCount}
+                        </p>
+                      ) : null}
+                      <TelephonyRecordingPlayer callLogId={snapshot.id} recordingIndex={i} />
+                    </div>
+                  ),
+                )}
               </div>
             ) : snapshot.telephonyDraft ? (
               <p className="mt-3 text-xs text-slate-500">
-                No recording URL from RingCentral on this log yet (call may not have been recorded, or run{" "}
-                <strong className="font-semibold text-slate-700">Workspace → Sync call logs</strong> again after the
-                latest integration update).
+                No recording link on this log yet. RingCentral often attaches recordings shortly after hangup; run{" "}
+                <strong className="font-semibold text-slate-700">Workspace → Sync call logs</strong> to refresh, or wait
+                and sync again if the call was recorded.
               </p>
             ) : null}
 

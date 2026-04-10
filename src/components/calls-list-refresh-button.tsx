@@ -1,28 +1,68 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
 
 import { INBOUND_CALL_HISTORY_REFRESH_EVENT } from "@/lib/call-history-refresh-event";
 
-/** Triggers client fetch of `/api/calls/inbound-history` plus RSC refresh. */
+/** Syncs RingCentral into the DB for the current URL date filter, then refetches inbound history. */
 export function CallsListRefreshButton() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   return (
     <div className="flex flex-col items-stretch gap-2 sm:items-end">
       <button
         type="button"
+        disabled={pending}
         onClick={() => {
-          window.dispatchEvent(new Event(INBOUND_CALL_HISTORY_REFRESH_EVENT));
-          router.refresh();
+          void (async () => {
+            setError(null);
+            setPending(true);
+            try {
+              const dateFrom = searchParams.get("dateFrom")?.trim() ?? "";
+              const dateTo = searchParams.get("dateTo")?.trim() ?? "";
+              const res = await fetch("/api/calls/inbound-history/ringcentral-sync", {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  ...(dateFrom ? { dateFrom } : {}),
+                  ...(dateTo ? { dateTo } : {}),
+                }),
+              });
+              const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+              if (!res.ok) {
+                const msg =
+                  (typeof data?.error === "string" && data.error) || `Sync failed (${res.status}).`;
+                setError(msg);
+                return;
+              }
+              window.dispatchEvent(new Event(INBOUND_CALL_HISTORY_REFRESH_EVENT));
+              router.refresh();
+            } catch {
+              setError("Network error.");
+            } finally {
+              setPending(false);
+            }
+          })();
         }}
-        className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+        className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
       >
-        Refresh list
+        {pending ? "Syncing…" : "Refresh list"}
       </button>
-      <p className="max-w-[240px] text-right text-[11px] leading-snug text-slate-500">
-        Fetches the latest rows from the database. New RingCentral rows usually appear after the telephony webhook ends
-        the session (or after Settings → Sync call logs now).
-      </p>
+      {error ? (
+        <p className="max-w-[260px] text-right text-[11px] leading-snug text-red-600" role="alert">
+          {error}
+        </p>
+      ) : (
+        <p className="max-w-[260px] text-right text-[11px] leading-snug text-slate-500">
+          Pulls voice call logs from RingCentral for the current range (same calendar days as the filter, or up to the
+          last 7 days when &quot;Latest calls&quot;), updates the database, then reloads this list.
+        </p>
+      )}
     </div>
   );
 }

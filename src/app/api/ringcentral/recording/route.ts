@@ -20,14 +20,26 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "callLogId is required." }, { status: 400 });
   }
 
+  const idxRaw = req.nextUrl.searchParams.get("recordingIndex")?.trim() ?? "0";
+  const recordingIndex = Math.max(0, Math.floor(Number.parseInt(idxRaw, 10) || 0));
+
   const sb = getSupabaseAdmin();
   const { data: row, error } = await sb
     .from(tables.CallLog)
-    .select("id,telephonyRecordingContentUri")
+    .select("id,telephonyRecordingContentUri,telephonyRecordingRefs")
     .eq("id", callLogId)
     .maybeSingle();
   if (error) throw error;
-  const uri = String((row?.telephonyRecordingContentUri as string | undefined) ?? "").trim();
+
+  let uri = "";
+  const refsRaw = row?.telephonyRecordingRefs;
+  if (Array.isArray(refsRaw) && refsRaw.length > 0) {
+    const hit = refsRaw[recordingIndex] as { contentUri?: unknown } | undefined;
+    uri = String(hit?.contentUri ?? "").trim();
+  }
+  if (!uri && recordingIndex === 0) {
+    uri = String((row?.telephonyRecordingContentUri as string | undefined) ?? "").trim();
+  }
   if (!row || !uri) {
     return NextResponse.json({ error: "Recording not found." }, { status: 404 });
   }

@@ -42,6 +42,8 @@ type RcCallRecord = {
   direction?: string;
   from?: RcParty;
   to?: RcParty;
+  /** Some responses include multiple top-level recording objects (e.g. segments). */
+  recordings?: RcRecording[];
   recording?: RcRecording;
   legs?: RcLeg[];
 };
@@ -65,16 +67,42 @@ function normalizeRecordingRef(raw: RcRecording | undefined | null): RecordingRe
   return undefined;
 }
 
-function extractRecordingFromRcRecord(rec: RcCallRecord): RecordingRef | undefined {
-  const top = normalizeRecordingRef(rec.recording);
-  if (top) return top;
-  const legs = rec.legs;
-  if (!Array.isArray(legs)) return undefined;
-  for (const leg of legs) {
-    const hit = normalizeRecordingRef(leg?.recording);
-    if (hit) return hit;
+/** Dedupe by recording id; order = top-level `recording`, `recordings[]`, then each leg’s `recording` (hold/transfer legs). */
+function extractAllRecordingsFromRcRecord(rec: RcCallRecord): RecordingRef[] {
+  const out: RecordingRef[] = [];
+  const seen = new Set<string>();
+  const push = (raw: RcRecording | undefined | null) => {
+    const n = normalizeRecordingRef(raw);
+    if (!n || seen.has(n.id)) return;
+    seen.add(n.id);
+    out.push(n);
+  };
+  push(rec.recording);
+  const topList = rec.recordings;
+  if (Array.isArray(topList)) {
+    for (const r of topList) push(r);
   }
-  return undefined;
+  const legs = rec.legs;
+  if (Array.isArray(legs)) {
+    for (const leg of legs) {
+      push(leg?.recording);
+    }
+  }
+  return out;
+}
+
+function mergeRecordingRefsInOrder(...parts: (RecordingRef[] | undefined)[]): RecordingRef[] {
+  const seen = new Set<string>();
+  const out: RecordingRef[] = [];
+  for (const part of parts) {
+    if (!part?.length) continue;
+    for (const r of part) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+    }
+  }
+  return out;
 }
 
 type RcCallLogListResponse = {
@@ -107,10 +135,7 @@ function pickCustomerPhone(r: RcCallRecord): { digits: string; callLog10: string
   return { digits: lookup, callLog10, name: party?.name ?? null };
 }
 
-function toImportedCall(
-  rec: RcCallRecord,
-  recording?: RecordingRef,
-): RingCentralImportedCall | null {
+function toImportedCall(rec: RcCallRecord, extraRecordings?: RecordingRef[]): RingCentralImportedCall | null {
   const id = String(rec.id ?? "").trim();
   if (!id) return null;
   const type = String(rec.type ?? "").toLowerCase();
@@ -125,7 +150,8 @@ function toImportedCall(
   const start = rec.startTime ? new Date(rec.startTime) : null;
   if (!start || Number.isNaN(start.getTime())) return null;
 
-  const resolvedRecording = recording ?? extractRecordingFromRcRecord(rec);
+  const merged = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(rec), extraRecordings);
+  const primary = merged[0];
   const meta = rec as unknown as Record<string, unknown>;
   const disp = dispositionFromRingCentralRecord(meta, direction);
 
@@ -136,7 +162,8 @@ function toImportedCall(
     phoneNormalized: phone.digits,
     contactPhone10: phone.callLog10,
     contactName: sanitizeTelephonyContactName(phone.name),
-    recording: resolvedRecording,
+    recording: primary,
+    recordings: merged.length > 0 ? merged : undefined,
     metadata: meta,
     telephonyResult: disp.resultLabel,
     telephonyCallbackPending: disp.callbackPending,
@@ -149,14 +176,20 @@ type RcPlatform = Awaited<ReturnType<typeof getRingCentralPlatform>>;
 /**
  * Extension call log (JWT user) often carries `recording` even when account-level call log omits it.
  */
+function mergeRecordingMapEntry(map: Map<string, RecordingRef[]>, key: string, refs: RecordingRef[]) {
+  if (!key || !refs.length) return;
+  const prev = map.get(key) ?? [];
+  map.set(key, mergeRecordingRefsInOrder(prev, refs));
+}
+
 async function loadExtensionRecordingMaps(
   platform: RcPlatform,
   dateFrom: Date,
   dateTo: Date,
   errors: string[],
-): Promise<{ byCallLogId: Map<string, RecordingRef>; bySessionId: Map<string, RecordingRef> }> {
-  const byCallLogId = new Map<string, RecordingRef>();
-  const bySessionId = new Map<string, RecordingRef>();
+): Promise<{ byCallLogId: Map<string, RecordingRef[]>; bySessionId: Map<string, RecordingRef[]> }> {
+  const byCallLogId = new Map<string, RecordingRef[]>();
+  const bySessionId = new Map<string, RecordingRef[]>();
   let page = 1;
   const perPage = 250;
   for (;;) {
@@ -176,12 +209,12 @@ async function loadExtensionRecordingMaps(
     const body = (await resp.json()) as RcCallLogListResponse;
     const records = body.records ?? [];
     for (const rec of records) {
-      const r = extractRecordingFromRcRecord(rec);
-      if (!r) continue;
+      const all = extractAllRecordingsFromRcRecord(rec);
+      if (!all.length) continue;
       const cid = String(rec.id ?? "").trim();
       const sid = String(rec.sessionId ?? "").trim();
-      if (cid) byCallLogId.set(cid, r);
-      if (sid) bySessionId.set(sid, r);
+      if (cid) mergeRecordingMapEntry(byCallLogId, cid, all);
+      if (sid) mergeRecordingMapEntry(bySessionId, sid, all);
     }
     const totalPages = body.paging?.totalPages;
     const lastPage =
@@ -194,16 +227,36 @@ async function loadExtensionRecordingMaps(
   return { byCallLogId, bySessionId };
 }
 
-function mergeRecordingFromExtensionIndex(
+/** Extension log often has per-leg recordings missing from the company call-log row. */
+function extensionRecordingExtrasForCall(
   rec: RcCallRecord,
-  byCallLogId: Map<string, RecordingRef>,
-  bySessionId: Map<string, RecordingRef>,
-): RecordingRef | undefined {
-  const direct = extractRecordingFromRcRecord(rec);
-  if (direct) return direct;
+  byCallLogId: Map<string, RecordingRef[]>,
+  bySessionId: Map<string, RecordingRef[]>,
+): RecordingRef[] {
   const cid = String(rec.id ?? "").trim();
   const sid = String(rec.sessionId ?? "").trim();
-  return (cid ? byCallLogId.get(cid) : undefined) ?? (sid ? bySessionId.get(sid) : undefined);
+  return mergeRecordingRefsInOrder(
+    cid ? byCallLogId.get(cid) : undefined,
+    sid ? bySessionId.get(sid) : undefined,
+  );
+}
+
+/** One detailed extension row sometimes includes `recording` before the list index is populated. */
+async function tryFetchExtensionCallLogDetailRecordings(
+  platform: RcPlatform,
+  callLogId: string,
+): Promise<RecordingRef[]> {
+  const id = callLogId.trim();
+  if (!id) return [];
+  const path = `/restapi/v1.0/account/~/extension/~/call-log/${encodeURIComponent(id)}`;
+  const resp = await platform.get(path, { view: "Detailed" });
+  if (!resp.ok) return [];
+  try {
+    const rec = (await resp.json()) as RcCallRecord;
+    return extractAllRecordingsFromRcRecord(rec);
+  } catch {
+    return [];
+  }
 }
 
 export type SyncRingCentralVoiceCallLogsResult = {
@@ -220,20 +273,44 @@ function isRingCentralAiPermissionMessage(msg: string): boolean {
   return /\[AI\]\s*permission|AI\] permission|needs to have \[AI\]/i.test(msg);
 }
 
+/** Hard cap on how wide a single RingCentral sync window can be (matches inbound-history guard). */
+const MAX_RC_SYNC_SPAN_MS = 31 * 24 * 60 * 60 * 1000;
+
+export type SyncRingCentralVoiceCallLogsOptions = {
+  hoursBack?: number;
+  /** When set, queries RingCentral for this `happenedAt` window instead of rolling `hoursBack`. */
+  happenedAtRange?: { from: Date; to: Date };
+};
+
 /**
  * Pulls account-level voice call log (all extensions) and merges recording metadata from the JWT user’s extension log when needed.
  */
-export async function syncRingCentralVoiceCallLogsFromApi(options: {
-  hoursBack?: number;
-} = {}): Promise<SyncRingCentralVoiceCallLogsResult> {
+export async function syncRingCentralVoiceCallLogsFromApi(
+  options: SyncRingCentralVoiceCallLogsOptions = {},
+): Promise<SyncRingCentralVoiceCallLogsResult> {
   const env = getRingCentralEnv();
   if (!env) {
     throw new Error("RingCentral is not configured.");
   }
 
-  const hoursBack = Math.min(Math.max(options.hoursBack ?? 48, 1), 168);
-  const dateTo = new Date();
-  const dateFrom = subHours(dateTo, hoursBack);
+  let dateFrom: Date;
+  let dateTo: Date;
+  if (options.happenedAtRange) {
+    dateFrom = options.happenedAtRange.from;
+    dateTo = options.happenedAtRange.to;
+    if (dateFrom.getTime() > dateTo.getTime()) {
+      throw new Error("Invalid sync date range.");
+    }
+    const now = new Date();
+    if (dateTo > now) dateTo = now;
+    if (dateTo.getTime() - dateFrom.getTime() > MAX_RC_SYNC_SPAN_MS) {
+      dateFrom = new Date(dateTo.getTime() - MAX_RC_SYNC_SPAN_MS);
+    }
+  } else {
+    const hoursBack = Math.min(Math.max(options.hoursBack ?? 48, 1), 168);
+    dateTo = new Date();
+    dateFrom = subHours(dateTo, hoursBack);
+  }
 
   const platform = await getRingCentralPlatform();
   const autoTx = getRingCentralAutoTranscribe();
@@ -275,8 +352,16 @@ export async function syncRingCentralVoiceCallLogsFromApi(options: {
     result.fetched += records.length;
 
     for (const rec of records) {
-      const merged = mergeRecordingFromExtensionIndex(rec, byCallLogId, bySessionId);
-      const imported = toImportedCall(rec, merged);
+      const fromSiblingsOnPage = mergeRecordingRefsInOrder(
+        ...records
+          .filter((r) => r !== rec && sameTelephonySession(rec, r))
+          .map((r) => extractAllRecordingsFromRcRecord(r)),
+      );
+      const extra = mergeRecordingRefsInOrder(
+        fromSiblingsOnPage,
+        extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId),
+      );
+      const imported = toImportedCall(rec, extra);
       if (!imported) {
         result.skipped += 1;
         continue;
@@ -345,6 +430,15 @@ function recordMatchesTelephonySession(rec: RcCallRecord, telephonySessionId: st
   return Boolean(sid && sid === want);
 }
 
+function sameTelephonySession(a: RcCallRecord, b: RcCallRecord): boolean {
+  const tsA = String(a.telephonySessionId ?? "").trim();
+  const tsB = String(b.telephonySessionId ?? "").trim();
+  if (tsA && tsA === tsB) return true;
+  const sA = String(a.sessionId ?? "").trim();
+  const sB = String(b.sessionId ?? "").trim();
+  return Boolean(sA && sA === sB);
+}
+
 const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
 /** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
 const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
@@ -377,7 +471,8 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
 
   let page = 1;
   const perPage = 100;
-  let matched: RcCallRecord | null = null;
+  /** Transfers can yield multiple company call-log rows with the same session id — collect all for recordings. */
+  const matchedById = new Map<string, RcCallRecord>();
 
   for (; page <= TELEPHONY_END_IMPORT_MAX_PAGES; page++) {
     const query: Record<string, string | number> = {
@@ -405,11 +500,10 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
 
     for (const rec of records) {
       if (recordMatchesTelephonySession(rec, sessionId)) {
-        matched = rec;
-        break;
+        const rid = String(rec.id ?? "").trim();
+        if (rid) matchedById.set(rid, rec);
       }
     }
-    if (matched) break;
 
     const totalPages = body.paging?.totalPages;
     const lastPage =
@@ -419,9 +513,30 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
     if (lastPage) break;
   }
 
-  if (matched) {
-    const merged = extractRecordingFromRcRecord(matched);
-    const imported = toImportedCall(matched, merged);
+  const matchedList = [...matchedById.values()].sort((a, b) => {
+    const ta = a.startTime ? new Date(a.startTime).getTime() : 0;
+    const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
+    return ta - tb;
+  });
+
+  if (matchedList.length > 0) {
+    const primary = matchedList[0];
+    const siblings = matchedList.slice(1);
+    const extErrors: string[] = [];
+    const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, dateFrom, dateTo, extErrors);
+    for (const msg of extErrors) {
+      console.warn(`[telephony-session-import] extension call-log map: ${msg}`);
+    }
+    const fromSiblingRows = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
+    const fromExt = mergeRecordingRefsInOrder(
+      ...matchedList.map((r) => extensionRecordingExtrasForCall(r, byCallLogId, bySessionId)),
+    );
+    const cid = String(primary.id ?? "").trim();
+    const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, cid);
+    const imported = toImportedCall(
+      primary,
+      mergeRecordingRefsInOrder(fromSiblingRows, fromExt, fromDetail),
+    );
     if (imported) {
       await deleteCallLogWebhookTelephonyPlaceholder(sessionId);
       const { callLogId } = await upsertCallLogFromRingCentralImport(imported, env.integrationUserId);

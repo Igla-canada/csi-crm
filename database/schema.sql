@@ -132,6 +132,7 @@ CREATE TABLE "CallLog" (
     "ringCentralCallLogId" TEXT,
     "telephonyRecordingId" TEXT,
     "telephonyRecordingContentUri" TEXT,
+    "telephonyRecordingRefs" JSONB,
     "telephonyMetadata" JSONB,
     "telephonyTranscript" TEXT,
     "telephonyAiSummary" TEXT,
