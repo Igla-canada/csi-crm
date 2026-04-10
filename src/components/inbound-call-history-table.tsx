@@ -277,6 +277,9 @@ export function InboundCallHistoryTable({
     return [...synthetic, ...db];
   }, [rows, activeDockCalls]);
 
+  const shownCount = merged.length;
+  const countNoun = shownCount === 1 ? "call" : "calls";
+
   if (merged.length === 0) {
     return (
       <div className="space-y-4">
@@ -293,6 +296,8 @@ export function InboundCallHistoryTable({
           filterActive={dateFilterActive}
         />
         <p className="text-sm text-slate-600">
+          <span className="font-semibold tabular-nums text-slate-800">{shownCount}</span> {countNoun} shown
+          <span className="text-slate-400"> · </span>
           {dateFilterActive ? "No inbound calls in this range." : "No inbound calls on file yet."}
         </p>
       </div>
@@ -313,6 +318,9 @@ export function InboundCallHistoryTable({
         timezoneLabel={dateFilterTimezone}
         filterActive={dateFilterActive}
       />
+      <p className="text-sm text-slate-600" aria-live="polite">
+        <span className="font-semibold tabular-nums text-slate-800">{shownCount}</span> {countNoun} shown
+      </p>
       <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-collapse text-left text-sm">
         <thead>
