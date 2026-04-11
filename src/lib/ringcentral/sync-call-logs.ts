@@ -256,7 +256,13 @@ async function loadExtensionRecordingMaps(
       errors.push(`Extension call-log page ${page}: HTTP ${resp.status} ${text.slice(0, 200)}`);
       break;
     }
-    const body = (await resp.json()) as RcCallLogListResponse;
+    let body: RcCallLogListResponse;
+    try {
+      body = (await resp.json()) as RcCallLogListResponse;
+    } catch {
+      errors.push(`Extension call-log page ${page}: response was not valid JSON`);
+      break;
+    }
     const records = body.records ?? [];
     for (const rec of records) {
       const all = extractAllRecordingsFromRcRecord(rec);
@@ -489,6 +495,10 @@ function sameTelephonySession(a: RcCallRecord, b: RcCallRecord): boolean {
   return Boolean(sA && sA === sB);
 }
 
+const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
+/** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
+const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
+
 /**
  * Pages account call-log until `sessionId` matches (or pages exhaust). Used for webhook-time import and per-call refresh.
  */
@@ -525,7 +535,13 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
       break;
     }
 
-    const body = (await resp.json()) as RcCallLogListResponse;
+    let body: RcCallLogListResponse;
+    try {
+      body = (await resp.json()) as RcCallLogListResponse;
+    } catch {
+      console.warn(`[rc-call-log-session] page ${page}: invalid JSON for session ${want.slice(0, 24)}…`);
+      break;
+    }
     const records = body.records ?? [];
 
     for (const rec of records) {
@@ -590,7 +606,12 @@ async function findAccountCallLogRecordByIdInWindow(
       view: "Detailed",
     });
     if (!resp.ok) break;
-    const body = (await resp.json()) as RcCallLogListResponse;
+    let body: RcCallLogListResponse;
+    try {
+      body = (await resp.json()) as RcCallLogListResponse;
+    } catch {
+      break;
+    }
     const records = body.records ?? [];
     for (const rec of records) {
       if (String(rec.id ?? "").trim() === want) return rec;
@@ -611,6 +632,18 @@ export type SyncSingleRingCentralCallLogResult =
 
 /** Re-fetch one CRM call log from RingCentral by stored `ringCentralCallLogId` (real id or `webhook-ts:…` session). */
 export async function syncSingleRingCentralCallLogByCrmId(crmCallLogId: string): Promise<SyncSingleRingCentralCallLogResult> {
+  try {
+    return await syncSingleRingCentralCallLogByCrmIdInner(crmCallLogId);
+  } catch (e) {
+    console.error("[sync-single-call-log]", crmCallLogId, e);
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg.trim() || "RingCentral sync failed unexpectedly." };
+  }
+}
+
+async function syncSingleRingCentralCallLogByCrmIdInner(
+  crmCallLogId: string,
+): Promise<SyncSingleRingCentralCallLogResult> {
   const env = getRingCentralEnv();
   if (!env) {
     return { ok: false, error: "RingCentral is not configured." };
@@ -735,10 +768,6 @@ export async function syncSingleRingCentralCallLogByCrmId(crmCallLogId: string):
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
-
-const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
-/** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
-const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
 
 /**
  * When a telephony session ends (webhook), try to import the matching account call-log row immediately.

@@ -35,9 +35,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "callLogId is required." }, { status: 400 });
   }
 
-  const result = await syncSingleRingCentralCallLogByCrmId(callLogId);
-  if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: 422 });
+  try {
+    const result = await syncSingleRingCentralCallLogByCrmId(callLogId);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: 422 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    console.error("[api/ringcentral/sync-call-log]", callLogId, e);
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Sync failed." },
+      { status: 500 },
+    );
   }
-  return NextResponse.json({ ok: true });
 }
