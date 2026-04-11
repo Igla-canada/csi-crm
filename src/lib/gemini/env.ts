@@ -10,7 +10,7 @@ export function getGeminiApiKey(): string | null {
   return k ?? null;
 }
 
-/** Model id for `generateContent` (e.g. gemini-2.0-flash). */
+/** Model id for `generateContent` (multimodal + audio). Default avoids deprecated 2.0 Flash for new API keys. */
 export function getGeminiTranscribeModel(): string {
-  return trimEnv("GEMINI_TRANSCRIBE_MODEL") ?? "gemini-2.0-flash";
+  return trimEnv("GEMINI_TRANSCRIBE_MODEL") ?? "gemini-2.5-flash";
 }
