@@ -2911,6 +2911,74 @@ export async function upsertCallLogFromRingCentralImport(
   return { callLogId: logId, clientId, created: true };
 }
 
+/**
+ * Applies a fresh RingCentral import onto an existing CRM call row by internal id.
+ * Used to replace a `webhook-ts:` placeholder with the real call-log id and refreshed recording URIs,
+ * or to re-fetch metadata when links are stale. Does not move the call to another client.
+ */
+export async function applyRingCentralImportToExistingCallLogById(
+  crmCallLogId: string,
+  row: RingCentralImportedCall,
+): Promise<void> {
+  const { data: existing, error: exErr } = await sb()
+    .from(tables.CallLog)
+    .select("id,clientId,telephonyDraft,summary")
+    .eq("id", crmCallLogId)
+    .maybeSingle();
+  if (exErr) throw exErr;
+  if (!existing) {
+    throw new Error("Call log not found.");
+  }
+
+  const patch: Record<string, unknown> = {
+    ringCentralCallLogId: row.ringCentralCallLogId,
+    telephonyMetadata: row.metadata,
+    telephonyResult: row.telephonyResult,
+    telephonyCallbackPending: row.telephonyCallbackPending,
+    direction: row.direction,
+    happenedAt: row.happenedAt.toISOString(),
+    contactPhone: row.contactPhone10,
+    contactName: row.contactName,
+  };
+  if (row.recordings !== undefined) {
+    const refs = row.recordings.length ? dedupeTelephonyRecordingRefs(row.recordings) : null;
+    patch.telephonyRecordingRefs = refs;
+    patch.telephonyRecordingId = refs?.[0]?.id ?? null;
+    patch.telephonyRecordingContentUri = refs?.[0]?.contentUri ?? null;
+  } else if (row.recording) {
+    const one = dedupeTelephonyRecordingRefs([row.recording]);
+    patch.telephonyRecordingRefs = one;
+    patch.telephonyRecordingId = one[0]?.id ?? null;
+    patch.telephonyRecordingContentUri = one[0]?.contentUri ?? null;
+  }
+  if (!(existing as { telephonyDraft?: boolean }).telephonyDraft) {
+    patch.telephonyCallbackPending = false;
+  }
+  const summaryTrim = String((existing as { summary?: string | null }).summary ?? "").trim();
+  const isPlaceholderSummary = summaryTrim === TELEPHONY_CALL_SUMMARY_PLACEHOLDER;
+  if (Boolean((existing as { telephonyDraft?: boolean }).telephonyDraft) || isPlaceholderSummary) {
+    patch.outcomeCode = row.telephonyCallbackPending
+      ? TELEPHONY_CALLBACK_OUTCOME_CODE
+      : TELEPHONY_IMPORT_OUTCOME_CODE;
+    patch.followUpAt = null;
+  }
+  const { error: uErr } = await sb().from(tables.CallLog).update(patch).eq("id", crmCallLogId);
+  if (uErr) throw uErr;
+  const persistedClientId = existing.clientId as string;
+  if (row.telephonyCallbackPending) {
+    await archiveDuplicateTelephonyCallbacksInWindow({
+      clientId: persistedClientId,
+      contactPhone10: row.contactPhone10,
+      center: row.happenedAt,
+      exceptCallLogId: crmCallLogId,
+    });
+  }
+  const reconcileIds = await collectClientIdsForTelephonyReconciliation(row, persistedClientId, persistedClientId);
+  for (const cid of reconcileIds) {
+    await reconcileTelephonyCallbacksIfLatestCallAnswered(cid);
+  }
+}
+
 /** Synthetic id for call rows created when the telephony webhook sees a session end before call-log API lists the call. */
 export const WEBHOOK_TELEPHONY_LOG_ID_PREFIX = "webhook-ts:";
 

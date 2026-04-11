@@ -372,6 +372,7 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                           productServiceOptions={productServiceOptionsDto}
                           leadSourceOptions={leadSourceOptionsDto}
                           canRequestTranscription={caps.canConfigure || caps.canEditCallLogs}
+                          canSyncRingCentralCallLog={caps.canConfigure || caps.canEditCallLogs}
                           initialEditOpen={Boolean(
                             openCallLogId && call.id === openCallLogId && caps.canEditCallLogs,
                           )}
@@ -432,6 +433,7 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                             telephonyGeminiStructured: call.telephonyGeminiStructured,
                             telephonyResult: call.telephonyResult,
                             telephonyCallbackPending: call.telephonyCallbackPending,
+                            ringCentralCallLogId: call.ringCentralCallLogId,
                           }}
                         />
                       );

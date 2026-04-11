@@ -4,6 +4,7 @@ import { CallDirection } from "@/lib/db";
 import { ChevronDown, Pencil } from "lucide-react";
 import {
   useActionState,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -84,6 +85,8 @@ export type CallLogCardSnapshot = {
   telephonyResult?: string | null;
   /** Listed on Tasks until staff saves the call or changes result. */
   telephonyCallbackPending?: boolean;
+  /** RingCentral call-log id or `webhook-ts:…` session placeholder when imported from RC. */
+  ringCentralCallLogId?: string | null;
 };
 
 function digitsOnly(raw: string) {
@@ -284,7 +287,7 @@ function TelephonyRecordingPlayer({
         }}
         onError={() => {
           setLoadError(
-            "Could not load this segment. Run Workspace → Sync call logs to refresh recording links, or check RingCentral access.",
+            "Could not load this segment. Use Sync this call below, or Workspace → Sync call logs, and check RingCentral access.",
           );
         }}
       >
@@ -639,6 +642,8 @@ type CallLogTimelineCardProps = {
   leadSourceOptions: LeadSourceOptionDTO[];
   /** When true, show “Request AI transcript” for RingCentral recordings without a transcript yet. */
   canRequestTranscription?: boolean;
+  /** When true, show “Sync this call” to re-fetch this row from RingCentral (recording links). */
+  canSyncRingCentralCallLog?: boolean;
   /** Deep link from Call history — start in edit mode for this card. */
   initialEditOpen?: boolean;
 };
@@ -654,6 +659,7 @@ export function CallLogTimelineCard({
   productServiceOptions,
   leadSourceOptions,
   canRequestTranscription = false,
+  canSyncRingCentralCallLog = false,
   initialEditOpen = false,
 }: CallLogTimelineCardProps) {
   const router = useRouter();
@@ -662,6 +668,39 @@ export function CallLogTimelineCard({
   const [bookBanner, setBookBanner] = useState(false);
   const [transcribePending, setTranscribePending] = useState(false);
   const [transcribeNote, setTranscribeNote] = useState<string | null>(null);
+  const [rcSyncPending, setRcSyncPending] = useState(false);
+  const [rcSyncNote, setRcSyncNote] = useState<string | null>(null);
+
+  const runRingCentralSingleSync = useCallback(() => {
+    setRcSyncPending(true);
+    setRcSyncNote(null);
+    void (async () => {
+      try {
+        const res = await fetch("/api/ringcentral/sync-call-log", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callLogId: snapshot.id }),
+        });
+        const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+        if (!res.ok) {
+          const msg =
+            (typeof data?.error === "string" && data.error) ||
+            (typeof data?.message === "string" && data.message) ||
+            `Request failed (${res.status}).`;
+          setRcSyncNote(msg);
+          return;
+        }
+        setRcSyncNote(null);
+        router.refresh();
+      } catch (e) {
+        setRcSyncNote(e instanceof Error ? e.message : "Request failed.");
+      } finally {
+        setRcSyncPending(false);
+      }
+    })();
+  }, [router, snapshot.id]);
+
   const [quickState, quickAction, quickPending] = useActionState<QuickCallResultActionState, FormData>(
     quickUpdateCallResultAction,
     null,
@@ -907,7 +946,24 @@ export function CallLogTimelineCard({
 
             {snapshot.hasTelephonyRecording ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Recording</p>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Recording</p>
+                  {canSyncRingCentralCallLog && String(snapshot.ringCentralCallLogId ?? "").trim() ? (
+                    <button
+                      type="button"
+                      disabled={rcSyncPending}
+                      onClick={runRingCentralSingleSync}
+                      className="shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {rcSyncPending ? "Syncing…" : "Sync this call"}
+                    </button>
+                  ) : null}
+                </div>
+                {rcSyncNote ? (
+                  <p className="mt-1 text-xs font-medium text-amber-900" role="status">
+                    {rcSyncNote}
+                  </p>
+                ) : null}
                 {Array.from(
                   { length: Math.max(1, snapshot.telephonyRecordingSegmentCount ?? 1) },
                   (_, i) => (
@@ -923,11 +979,29 @@ export function CallLogTimelineCard({
                 )}
               </div>
             ) : snapshot.telephonyDraft ? (
-              <p className="mt-3 text-xs text-slate-500">
-                No recording link on this log yet. RingCentral often attaches recordings shortly after hangup; run{" "}
-                <strong className="font-semibold text-slate-700">Workspace → Sync call logs</strong> to refresh, or wait
-                and sync again if the call was recorded.
-              </p>
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-slate-500">
+                  No recording link on this log yet. RingCentral often attaches recordings shortly after hangup; use{" "}
+                  <strong className="font-semibold text-slate-700">Sync this call</strong> or{" "}
+                  <strong className="font-semibold text-slate-700">Workspace → Sync call logs</strong>, or wait and try
+                  again if the call was recorded.
+                </p>
+                {canSyncRingCentralCallLog && String(snapshot.ringCentralCallLogId ?? "").trim() ? (
+                  <button
+                    type="button"
+                    disabled={rcSyncPending}
+                    onClick={runRingCentralSingleSync}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {rcSyncPending ? "Syncing…" : "Sync this call"}
+                  </button>
+                ) : null}
+                {rcSyncNote ? (
+                  <p className="text-xs font-medium text-amber-900" role="status">
+                    {rcSyncNote}
+                  </p>
+                ) : null}
+              </div>
             ) : null}
 
             {snapshot.hasTelephonyRecording &&

@@ -5,17 +5,19 @@ import "server-only";
  * Does not answer, transfer, or otherwise control live calls.
  */
 
-import { subHours } from "date-fns";
+import { addHours, subHours } from "date-fns";
 
 import {
+  applyRingCentralImportToExistingCallLogById,
   deleteCallLogWebhookTelephonyPlaceholder,
   sanitizeTelephonyContactName,
+  WEBHOOK_TELEPHONY_LOG_ID_PREFIX,
   type TelephonyWebhookSessionStubInput,
   upsertCallLogFromRingCentralImport,
   upsertCallLogFromTelephonyWebhookStub,
   type RingCentralImportedCall,
 } from "@/lib/crm";
-import { CallDirection } from "@/lib/db";
+import { CallDirection, getSupabaseAdmin, tables } from "@/lib/db";
 import { getRingCentralAutoTranscribe, getRingCentralEnv } from "@/lib/ringcentral/env";
 import { recordingPathFromStoredRef, stableRecordingIdForPath } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
@@ -487,6 +489,253 @@ function sameTelephonySession(a: RcCallRecord, b: RcCallRecord): boolean {
   return Boolean(sA && sA === sB);
 }
 
+/**
+ * Pages account call-log until `sessionId` matches (or pages exhaust). Used for webhook-time import and per-call refresh.
+ */
+async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+  platform: RcPlatform,
+  sessionId: string,
+  dateFrom: Date,
+  dateTo: Date,
+  directionFilter: string | undefined,
+  maxPages: number,
+): Promise<RcCallRecord[]> {
+  const want = sessionId.trim();
+  if (!want) return [];
+  const matchedById = new Map<string, RcCallRecord>();
+
+  for (let page = 1; page <= maxPages; page++) {
+    const query: Record<string, string | number> = {
+      dateFrom: dateFrom.toISOString(),
+      dateTo: dateTo.toISOString(),
+      page,
+      perPage: 100,
+      type: "Voice",
+      view: "Detailed",
+    };
+    if (directionFilter) query.direction = directionFilter;
+
+    const resp = await platform.get("/restapi/v1.0/account/~/call-log", query);
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      console.warn(
+        `[rc-call-log-session] lookup HTTP ${resp.status} for session ${want.slice(0, 24)}… ${text.slice(0, 200)}`,
+      );
+      break;
+    }
+
+    const body = (await resp.json()) as RcCallLogListResponse;
+    const records = body.records ?? [];
+
+    for (const rec of records) {
+      if (recordMatchesTelephonySession(rec, want)) {
+        const rid = String(rec.id ?? "").trim();
+        if (rid) matchedById.set(rid, rec);
+      }
+    }
+
+    const totalPages = body.paging?.totalPages;
+    const lastPage =
+      records.length === 0 ||
+      (typeof totalPages === "number" && page >= totalPages) ||
+      records.length < 100;
+    if (lastPage) break;
+  }
+
+  return [...matchedById.values()].sort((a, b) => {
+    const ta = a.startTime ? new Date(a.startTime).getTime() : 0;
+    const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
+    return ta - tb;
+  });
+}
+
+async function tryFetchCallLogRecordDetailed(platform: RcPlatform, callLogId: string): Promise<RcCallRecord | null> {
+  const id = callLogId.trim();
+  if (!id) return null;
+  const paths = [
+    `/restapi/v1.0/account/~/call-log/${encodeURIComponent(id)}`,
+    `/restapi/v1.0/account/~/extension/~/call-log/${encodeURIComponent(id)}`,
+  ];
+  for (const path of paths) {
+    const resp = await platform.get(path, { view: "Detailed" });
+    if (!resp.ok) continue;
+    try {
+      return (await resp.json()) as RcCallRecord;
+    } catch {
+      /* try next path */
+    }
+  }
+  return null;
+}
+
+async function findAccountCallLogRecordByIdInWindow(
+  platform: RcPlatform,
+  rcCallLogId: string,
+  dateFrom: Date,
+  dateTo: Date,
+): Promise<RcCallRecord | null> {
+  const want = rcCallLogId.trim();
+  if (!want) return null;
+  const perPage = 250;
+  const maxPages = 25;
+
+  for (let page = 1; page <= maxPages; page++) {
+    const resp = await platform.get("/restapi/v1.0/account/~/call-log", {
+      dateFrom: dateFrom.toISOString(),
+      dateTo: dateTo.toISOString(),
+      page,
+      perPage,
+      type: "Voice",
+      view: "Detailed",
+    });
+    if (!resp.ok) break;
+    const body = (await resp.json()) as RcCallLogListResponse;
+    const records = body.records ?? [];
+    for (const rec of records) {
+      if (String(rec.id ?? "").trim() === want) return rec;
+    }
+    const totalPages = body.paging?.totalPages;
+    const lastPage =
+      records.length === 0 ||
+      (typeof totalPages === "number" && page >= totalPages) ||
+      records.length < perPage;
+    if (lastPage) break;
+  }
+  return null;
+}
+
+export type SyncSingleRingCentralCallLogResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/** Re-fetch one CRM call log from RingCentral by stored `ringCentralCallLogId` (real id or `webhook-ts:…` session). */
+export async function syncSingleRingCentralCallLogByCrmId(crmCallLogId: string): Promise<SyncSingleRingCentralCallLogResult> {
+  const env = getRingCentralEnv();
+  if (!env) {
+    return { ok: false, error: "RingCentral is not configured." };
+  }
+
+  const sb = getSupabaseAdmin();
+  const { data: callRow, error: rowErr } = await sb
+    .from(tables.CallLog)
+    .select("id,ringCentralCallLogId,happenedAt")
+    .eq("id", crmCallLogId)
+    .maybeSingle();
+  if (rowErr) {
+    return { ok: false, error: rowErr.message };
+  }
+  if (!callRow) {
+    return { ok: false, error: "Call log not found." };
+  }
+
+  const rcKey = String((callRow as { ringCentralCallLogId?: string | null }).ringCentralCallLogId ?? "").trim();
+  if (!rcKey) {
+    return { ok: false, error: "This call is not linked to RingCentral (no RingCentral id on file)." };
+  }
+
+  const happenedAt = new Date(String((callRow as { happenedAt: string }).happenedAt));
+  if (Number.isNaN(happenedAt.getTime())) {
+    return { ok: false, error: "Invalid call timestamp." };
+  }
+
+  const now = new Date();
+  let windowStart = subHours(happenedAt, 72);
+  let windowEnd = addHours(happenedAt, 72);
+  if (windowEnd > now) windowEnd = now;
+  if (windowStart > windowEnd) windowStart = subHours(windowEnd, 1);
+
+  const platform = await getRingCentralPlatform();
+  const extErrors: string[] = [];
+  const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, windowStart, windowEnd, extErrors);
+  for (const msg of extErrors) {
+    console.warn(`[sync-single-call-log] extension call-log map: ${msg}`);
+  }
+
+  const buildImportedFromSessionRows = async (matchedList: RcCallRecord[]) => {
+    if (matchedList.length === 0) return null;
+    const primary = matchedList[0];
+    const siblings = matchedList.slice(1);
+    const fromSiblingRows = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
+    const fromExt = mergeRecordingRefsInOrder(
+      ...matchedList.map((r) => extensionRecordingExtrasForCall(r, byCallLogId, bySessionId)),
+    );
+    const cid = String(primary.id ?? "").trim();
+    const fromDetail = cid ? await tryFetchExtensionCallLogDetailRecordings(platform, cid) : [];
+    return toImportedCall(primary, mergeRecordingRefsInOrder(fromSiblingRows, fromExt, fromDetail));
+  };
+
+  if (rcKey.startsWith(WEBHOOK_TELEPHONY_LOG_ID_PREFIX)) {
+    const sessionId = rcKey.slice(WEBHOOK_TELEPHONY_LOG_ID_PREFIX.length).trim();
+    if (!sessionId) {
+      return { ok: false, error: "Invalid RingCentral session placeholder on this call." };
+    }
+    const matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+      platform,
+      sessionId,
+      windowStart,
+      windowEnd,
+      undefined,
+      TELEPHONY_END_IMPORT_MAX_PAGES,
+    );
+    const imported = await buildImportedFromSessionRows(matchedList);
+    if (!imported) {
+      return {
+        ok: false,
+        error:
+          "RingCentral has no call-log row for this session in the search window yet. Try again later or run Workspace → Sync call logs.",
+      };
+    }
+    try {
+      await applyRingCentralImportToExistingCallLogById(crmCallLogId, imported);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  let rec = await tryFetchCallLogRecordDetailed(platform, rcKey);
+  if (!rec || String(rec.id ?? "").trim() !== rcKey) {
+    rec = await findAccountCallLogRecordByIdInWindow(platform, rcKey, windowStart, windowEnd);
+  }
+  if (!rec || String(rec.id ?? "").trim() !== rcKey) {
+    return {
+      ok: false,
+      error:
+        "This call was not found in RingCentral (check retention, or the id may no longer match). Try a full sync with a wider date range.",
+    };
+  }
+
+  const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, rcKey);
+  const extras = mergeRecordingRefsInOrder(extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId), fromDetail);
+
+  const sessionHint = String(rec.telephonySessionId ?? rec.sessionId ?? "").trim();
+  let siblingRefs: RecordingRef[] = [];
+  if (sessionHint) {
+    const group = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+      platform,
+      sessionHint,
+      windowStart,
+      windowEnd,
+      undefined,
+      TELEPHONY_END_IMPORT_MAX_PAGES,
+    );
+    const siblings = group.filter((r) => String(r.id ?? "").trim() !== rcKey);
+    siblingRefs = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
+  }
+
+  const imported = toImportedCall(rec, mergeRecordingRefsInOrder(siblingRefs, extras));
+  if (!imported) {
+    return { ok: false, error: "Could not build RingCentral import for this call." };
+  }
+  try {
+    await upsertCallLogFromRingCentralImport(imported, env.integrationUserId);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
 /** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
 const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
@@ -517,55 +766,15 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
         ? "Outbound"
         : undefined;
 
-  let page = 1;
-  const perPage = 100;
   /** Transfers can yield multiple company call-log rows with the same session id — collect all for recordings. */
-  const matchedById = new Map<string, RcCallRecord>();
-
-  for (; page <= TELEPHONY_END_IMPORT_MAX_PAGES; page++) {
-    const query: Record<string, string | number> = {
-      dateFrom: dateFrom.toISOString(),
-      dateTo: dateTo.toISOString(),
-      page,
-      perPage,
-      type: "Voice",
-      view: "Detailed",
-    };
-    if (directionFilter) query.direction = directionFilter;
-
-    const resp = await platform.get("/restapi/v1.0/account/~/call-log", query);
-
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      console.warn(
-        `[telephony-session-import] call-log lookup HTTP ${resp.status} for session ${sessionId.slice(0, 24)}… ${text.slice(0, 200)}`,
-      );
-      break;
-    }
-
-    const body = (await resp.json()) as RcCallLogListResponse;
-    const records = body.records ?? [];
-
-    for (const rec of records) {
-      if (recordMatchesTelephonySession(rec, sessionId)) {
-        const rid = String(rec.id ?? "").trim();
-        if (rid) matchedById.set(rid, rec);
-      }
-    }
-
-    const totalPages = body.paging?.totalPages;
-    const lastPage =
-      records.length === 0 ||
-      (typeof totalPages === "number" && page >= totalPages) ||
-      records.length < perPage;
-    if (lastPage) break;
-  }
-
-  const matchedList = [...matchedById.values()].sort((a, b) => {
-    const ta = a.startTime ? new Date(a.startTime).getTime() : 0;
-    const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
-    return ta - tb;
-  });
+  const matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+    platform,
+    sessionId,
+    dateFrom,
+    dateTo,
+    directionFilter,
+    TELEPHONY_END_IMPORT_MAX_PAGES,
+  );
 
   if (matchedList.length > 0) {
     const primary = matchedList[0];
