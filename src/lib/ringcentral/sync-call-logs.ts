@@ -33,7 +33,17 @@ type RcParty = { phoneNumber?: string; name?: string };
 
 type RcRecording = { id?: string; contentUri?: string; uri?: string };
 
-type RcLeg = { recording?: RcRecording; from?: RcParty; to?: RcParty; result?: string; action?: string };
+type RcLeg = {
+  recording?: RcRecording;
+  /** Some carriers expose multiple fragments on one leg (TELUS / forwarded flows). */
+  recordings?: RcRecording[];
+  from?: RcParty;
+  to?: RcParty;
+  result?: string;
+  action?: string;
+  /** Nested legs (forwarding / FindMe trees in Detailed view). */
+  legs?: RcLeg[];
+};
 
 type RcCallRecord = {
   id?: string;
@@ -66,7 +76,25 @@ function normalizeRecordingRef(raw: RcRecording | undefined | null): RecordingRe
   return { id, contentUri: path };
 }
 
-/** Dedupe by recording id; order = top-level `recording`, `recordings[]`, then each leg’s `recording` (hold/transfer legs). */
+function pushRecordingFieldsOnLeg(leg: RcLeg, push: (raw: RcRecording | undefined | null) => void): void {
+  push(leg.recording);
+  const sub = leg.recordings;
+  if (Array.isArray(sub)) {
+    for (const r of sub) push(r);
+  }
+}
+
+/** Walk nested `legs` (FindMe / transfer trees in Detailed call-log). */
+function walkLegsForRecordings(legs: RcLeg[] | undefined, push: (raw: RcRecording | undefined | null) => void): void {
+  if (!Array.isArray(legs)) return;
+  for (const leg of legs) {
+    if (!leg || typeof leg !== "object") continue;
+    pushRecordingFieldsOnLeg(leg, push);
+    if (Array.isArray(leg.legs)) walkLegsForRecordings(leg.legs, push);
+  }
+}
+
+/** Dedupe by recording id; order = top-level `recording`, `recordings[]`, then each leg (recursive). */
 function extractAllRecordingsFromRcRecord(rec: RcCallRecord): RecordingRef[] {
   const out: RecordingRef[] = [];
   const seen = new Set<string>();
@@ -81,12 +109,7 @@ function extractAllRecordingsFromRcRecord(rec: RcCallRecord): RecordingRef[] {
   if (Array.isArray(topList)) {
     for (const r of topList) push(r);
   }
-  const legs = rec.legs;
-  if (Array.isArray(legs)) {
-    for (const leg of legs) {
-      push(leg?.recording);
-    }
-  }
+  walkLegsForRecordings(rec.legs, push);
   return out;
 }
 
@@ -200,7 +223,9 @@ function toImportedCall(rec: RcCallRecord, extraRecordings?: RecordingRef[]): Ri
   const start = rec.startTime ? new Date(rec.startTime) : null;
   if (!start || Number.isNaN(start.getTime())) return null;
 
-  const merged = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(rec), extraRecordings);
+  // Prefer extras (siblings, extension map, account Detail fetch) over list-row extractions so FindMe/transfer legs
+  // with the real recording win when the parent row carries a stale or empty ref (common on TELUS-style logs).
+  const merged = mergeRecordingRefsInOrder(extraRecordings, extractAllRecordingsFromRcRecord(rec));
   const primary = merged[0];
   const meta = rec as unknown as Record<string, unknown>;
   const disp = dispositionFromRingCentralRecord(meta, direction);
@@ -413,10 +438,15 @@ export async function syncRingCentralVoiceCallLogsFromApi(
           .filter((r) => r !== rec && sameTelephonySession(rec, r))
           .map((r) => extractAllRecordingsFromRcRecord(r)),
       );
-      const extra = mergeRecordingRefsInOrder(
+      const cid = String(rec.id ?? "").trim();
+      let extra = mergeRecordingRefsInOrder(
         fromSiblingsOnPage,
         extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId),
       );
+      const haveAnyRecording = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(rec), extra).length > 0;
+      if (!haveAnyRecording && cid) {
+        extra = mergeRecordingRefsInOrder(await recordingRefsFromAccountCallLogDetail(platform, cid), extra);
+      }
       const imported = toImportedCall(rec, extra);
       if (!imported) {
         result.skipped += 1;
@@ -626,6 +656,14 @@ async function findAccountCallLogRecordByIdInWindow(
   return null;
 }
 
+/** Account `call-log/{id}?view=Detailed` often includes full nested legs + recordings missing from list rows (TELUS / FindMe). */
+async function recordingRefsFromAccountCallLogDetail(platform: RcPlatform, callLogId: string): Promise<RecordingRef[]> {
+  const id = callLogId.trim();
+  if (!id) return [];
+  const detail = await tryFetchCallLogRecordDetailed(platform, id);
+  return detail ? extractAllRecordingsFromRcRecord(detail) : [];
+}
+
 export type SyncSingleRingCentralCallLogResult =
   | { ok: true }
   | { ok: false; error: string };
@@ -695,7 +733,11 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     );
     const cid = String(primary.id ?? "").trim();
     const fromDetail = cid ? await tryFetchExtensionCallLogDetailRecordings(platform, cid) : [];
-    return toImportedCall(primary, mergeRecordingRefsInOrder(fromSiblingRows, fromExt, fromDetail));
+    const fromAccountDetail = cid ? await recordingRefsFromAccountCallLogDetail(platform, cid) : [];
+    return toImportedCall(
+      primary,
+      mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
+    );
   };
 
   if (rcKey.startsWith(WEBHOOK_TELEPHONY_LOG_ID_PREFIX)) {
@@ -740,7 +782,12 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
   }
 
   const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, rcKey);
-  const extras = mergeRecordingRefsInOrder(extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId), fromDetail);
+  const fromAccountDetail = await recordingRefsFromAccountCallLogDetail(platform, rcKey);
+  const extras = mergeRecordingRefsInOrder(
+    fromAccountDetail,
+    extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId),
+    fromDetail,
+  );
 
   const sessionHint = String(rec.telephonySessionId ?? rec.sessionId ?? "").trim();
   let siblingRefs: RecordingRef[] = [];
@@ -819,9 +866,10 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
     );
     const cid = String(primary.id ?? "").trim();
     const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, cid);
+    const fromAccountDetail = cid ? await recordingRefsFromAccountCallLogDetail(platform, cid) : [];
     const imported = toImportedCall(
       primary,
-      mergeRecordingRefsInOrder(fromSiblingRows, fromExt, fromDetail),
+      mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
     );
     if (imported) {
       await deleteCallLogWebhookTelephonyPlaceholder(sessionId);
