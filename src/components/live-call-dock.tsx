@@ -48,7 +48,26 @@ export type LiveCallDockProps = {
 function isRateLimitedResponse(res: Response, errorText: string, upstreamStatus?: number): boolean {
   if (res.status === 429) return true;
   if (upstreamStatus === 429) return true;
-  return /\brate|throttl|exceeded|too many requests|quota/i.test(errorText);
+  // Auth / client errors are not RingCentral throttle — avoid matching bare "exceeded" or "rate" in long messages.
+  if (res.status === 401 || res.status === 403 || res.status === 404) return false;
+  if (
+    typeof upstreamStatus === "number" &&
+    upstreamStatus >= 400 &&
+    upstreamStatus < 500 &&
+    upstreamStatus !== 429
+  ) {
+    return false;
+  }
+  const t = errorText.toLowerCase();
+  return (
+    /\brequest\s+rate\s+exceeded\b/.test(t) ||
+    /\btoo\s+many\s+requests\b/.test(t) ||
+    /\brate[\s_-]*limit/i.test(errorText) ||
+    /\bthrottl/i.test(t) ||
+    /\bcmn[-_]429\b/.test(t) ||
+    /\binbound_rate_limit\b/.test(t) ||
+    /\boutbound_rate_limit\b/.test(t)
+  );
 }
 
 /** Seconds to keep the on-call card after the server first reports zero active lines (RingCentral often ghosts the same session once). */

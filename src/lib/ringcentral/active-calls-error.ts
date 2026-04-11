@@ -26,10 +26,24 @@ export function parseExtensionActiveCallsFailure(message: string): {
     /\bcmn[-_]429\b/.test(all) ||
     /\bratelimit\b/.test(all);
 
+  /** Do not treat 401/403/404 as throttle just because the body mentions "rate" (false positives on first poll). */
+  const clientErrorMisreadAsThrottle =
+    typeof upstreamStatus === "number" &&
+    Number.isFinite(upstreamStatus) &&
+    upstreamStatus >= 400 &&
+    upstreamStatus < 500 &&
+    upstreamStatus !== 429;
+
+  const throttleStatusOrUnknown =
+    upstreamStatus == null ||
+    !Number.isFinite(upstreamStatus) ||
+    upstreamStatus === 429 ||
+    upstreamStatus >= 500;
+
   const rateLimited =
     upstreamStatus === 429 ||
     (upstreamStatus === 503 && looksLikeRate) ||
-    looksLikeRate;
+    (looksLikeRate && throttleStatusOrUnknown && !clientErrorMisreadAsThrottle);
 
   const extensionIdNotFound =
     /parameter\s*\[extensionId\]\s*is not found|extensionid.*not found/i.test(all);
