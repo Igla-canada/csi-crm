@@ -248,6 +248,52 @@ function toImportedCall(rec: RcCallRecord, extraRecordings?: RecordingRef[]): Ri
 
 type RcPlatform = Awaited<ReturnType<typeof getRingCentralPlatform>>;
 
+/** RingCentral rejects tight bursts of REST calls with "Request rate exceeded" — pace sync traffic. */
+const RC_SYNC_MIN_REQUEST_INTERVAL_MS = 350;
+
+let rcSyncLastRequestEndedAt = 0;
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function paceRingCentralSyncRequest(): Promise<void> {
+  const now = Date.now();
+  const wait = rcSyncLastRequestEndedAt + RC_SYNC_MIN_REQUEST_INTERVAL_MS - now;
+  if (wait > 0) await sleepMs(wait);
+}
+
+function touchRingCentralSyncRequestEnd(): void {
+  rcSyncLastRequestEndedAt = Date.now();
+}
+
+/**
+ * Throttled GET for call-log sync. Retries with backoff on HTTP 429 (per-minute / burst limits).
+ */
+async function rcSyncGet(platform: RcPlatform, url: string, query?: unknown): Promise<Response> {
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await paceRingCentralSyncRequest();
+    const resp = query !== undefined ? await platform.get(url, query) : await platform.get(url);
+    touchRingCentralSyncRequestEnd();
+
+    if (resp.status !== 429 || attempt === maxAttempts - 1) {
+      return resp;
+    }
+
+    let waitMs = 1800 * (attempt + 1);
+    const ra = resp.headers.get("retry-after");
+    if (ra) {
+      const sec = parseInt(ra, 10);
+      if (Number.isFinite(sec) && sec > 0) {
+        waitMs = Math.min(sec * 1000, 60_000);
+      }
+    }
+    await sleepMs(waitMs);
+  }
+  throw new Error("rcSyncGet: exhausted retries without returning (bug).");
+}
+
 /**
  * Extension call log (JWT user) often carries `recording` even when account-level call log omits it.
  */
@@ -268,7 +314,7 @@ async function loadExtensionRecordingMaps(
   let page = 1;
   const perPage = 250;
   for (;;) {
-    const resp = await platform.get("/restapi/v1.0/account/~/extension/~/call-log", {
+    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/extension/~/call-log", {
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       page,
@@ -330,7 +376,7 @@ async function tryFetchExtensionCallLogDetailRecordings(
   const id = callLogId.trim();
   if (!id) return [];
   const path = `/restapi/v1.0/account/~/extension/~/call-log/${encodeURIComponent(id)}`;
-  const resp = await platform.get(path, { view: "Detailed" });
+  const resp = await rcSyncGet(platform, path, { view: "Detailed" });
   if (!resp.ok) return [];
   try {
     const rec = (await resp.json()) as RcCallRecord;
@@ -413,7 +459,7 @@ export async function syncRingCentralVoiceCallLogsFromApi(
   const perPage = 250;
 
   for (;;) {
-    const resp = await platform.get("/restapi/v1.0/account/~/call-log", {
+    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", {
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       page,
@@ -555,7 +601,7 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
     };
     if (directionFilter) query.direction = directionFilter;
 
-    const resp = await platform.get("/restapi/v1.0/account/~/call-log", query);
+    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", query);
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -604,7 +650,7 @@ async function tryFetchCallLogRecordDetailed(platform: RcPlatform, callLogId: st
     `/restapi/v1.0/account/~/extension/~/call-log/${encodeURIComponent(id)}`,
   ];
   for (const path of paths) {
-    const resp = await platform.get(path, { view: "Detailed" });
+    const resp = await rcSyncGet(platform, path, { view: "Detailed" });
     if (!resp.ok) continue;
     try {
       return (await resp.json()) as RcCallRecord;
@@ -627,7 +673,7 @@ async function findAccountCallLogRecordByIdInWindow(
   const maxPages = 25;
 
   for (let page = 1; page <= maxPages; page++) {
-    const resp = await platform.get("/restapi/v1.0/account/~/call-log", {
+    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", {
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       page,
