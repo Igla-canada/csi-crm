@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getSupabaseAdmin, tables } from "@/lib/db";
+import { recordingPathFromStoredRef } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
 
 /** RingCentral → Gemini inline limit (~20 MB); keep headroom for base64 expansion server-side. */
@@ -22,11 +23,12 @@ export async function fetchFirstCallLogRecordingBytes(callLogId: string): Promis
   let uri = "";
   const refsRaw = row.telephonyRecordingRefs;
   if (Array.isArray(refsRaw) && refsRaw.length > 0) {
-    const first = refsRaw[0] as { contentUri?: unknown } | undefined;
-    uri = String(first?.contentUri ?? "").trim();
+    uri = recordingPathFromStoredRef(refsRaw[0]);
   }
   if (!uri) {
-    uri = String((row.telephonyRecordingContentUri as string | undefined) ?? "").trim();
+    uri = recordingPathFromStoredRef({
+      contentUri: (row.telephonyRecordingContentUri as string | undefined) ?? "",
+    });
   }
   if (!uri) return null;
 

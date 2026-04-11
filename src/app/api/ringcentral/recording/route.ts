@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getCurrentUserForApi } from "@/lib/auth";
 import { getSupabaseAdmin, tables } from "@/lib/db";
+import { recordingPathFromStoredRef } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
 import { getUserCapabilities } from "@/lib/user-privileges";
 
@@ -33,12 +34,13 @@ export async function GET(req: NextRequest) {
 
   let uri = "";
   const refsRaw = row?.telephonyRecordingRefs;
-  if (Array.isArray(refsRaw) && refsRaw.length > 0) {
-    const hit = refsRaw[recordingIndex] as { contentUri?: unknown } | undefined;
-    uri = String(hit?.contentUri ?? "").trim();
+  if (Array.isArray(refsRaw) && recordingIndex >= 0 && recordingIndex < refsRaw.length) {
+    uri = recordingPathFromStoredRef(refsRaw[recordingIndex]);
   }
   if (!uri && recordingIndex === 0) {
-    uri = String((row?.telephonyRecordingContentUri as string | undefined) ?? "").trim();
+    uri = recordingPathFromStoredRef({
+      contentUri: (row?.telephonyRecordingContentUri as string | undefined) ?? "",
+    });
   }
   if (!row || !uri) {
     return NextResponse.json({ error: "Recording not found." }, { status: 404 });

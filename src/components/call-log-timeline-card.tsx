@@ -1,7 +1,7 @@
 "use client";
 
 import { CallDirection } from "@/lib/db";
-import { Pencil } from "lucide-react";
+import { ChevronDown, Pencil } from "lucide-react";
 import {
   useActionState,
   useEffect,
@@ -10,6 +10,7 @@ import {
   useState,
   useTransition,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -110,6 +111,37 @@ function fieldOrDash(value: string) {
 
 const PLAYBACK_RATES = [1, 1.5, 2] as const;
 
+function CollapsiblePanel({
+  title,
+  titleClassName,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  titleClassName?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <>
+      <button
+        type="button"
+        className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg py-0.5 text-left outline-none ring-offset-2 focus-visible:ring-2 focus-visible:ring-slate-400"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span className={titleClassName}>{title}</span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-slate-600 opacity-70 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+          aria-hidden
+        />
+      </button>
+      {open ? <div className="mt-2">{children}</div> : null}
+    </>
+  );
+}
+
 function TelephonyGeminiInsightsBlock({ insights }: { insights: TelephonyGeminiInsights }) {
   const d = insights.callLogDetails;
   const score = insights.callScore;
@@ -131,10 +163,12 @@ function TelephonyGeminiInsightsBlock({ insights }: { insights: TelephonyGeminiI
 
   return (
     <div className="mt-4 rounded-xl border border-emerald-200/90 bg-emerald-50/35 px-3 py-3">
-      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-900/90">AI call insights (Gemini)</p>
-
-      {d ? (
-        <div className="mt-3">
+      <CollapsiblePanel
+        title="AI call insights"
+        titleClassName="text-xs font-semibold uppercase tracking-wide text-emerald-900/90"
+      >
+        {d ? (
+        <div className="mt-1">
           <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-500">Call Log Details</p>
           <dl className="mt-2 grid gap-1.5 text-sm sm:grid-cols-[minmax(0,11rem)_1fr]">
             <dt className="text-slate-500">Date and time</dt>
@@ -178,6 +212,7 @@ function TelephonyGeminiInsightsBlock({ insights }: { insights: TelephonyGeminiI
           {scoreLine("Customer experience", score.customerExperience)}
         </div>
       ) : null}
+      </CollapsiblePanel>
     </div>
   );
 }
@@ -191,11 +226,16 @@ function TelephonyRecordingPlayer({
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const src =
     recordingIndex > 0
       ? `/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}&recordingIndex=${recordingIndex}`
       : `/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}`;
+
+  useEffect(() => {
+    setLoadError(null);
+  }, [src]);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -239,11 +279,22 @@ function TelephonyRecordingPlayer({
         className="h-9 w-full max-w-md"
         src={src}
         onLoadedMetadata={(e) => {
+          setLoadError(null);
           e.currentTarget.playbackRate = playbackRate;
+        }}
+        onError={() => {
+          setLoadError(
+            "Could not load this segment. Run Workspace → Sync call logs to refresh recording links, or check RingCentral access.",
+          );
         }}
       >
         Your browser does not support audio playback.
       </audio>
+      {loadError ? (
+        <p className="text-xs font-medium text-amber-900" role="alert">
+          {loadError}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -953,10 +1004,14 @@ export function CallLogTimelineCard({
 
             {snapshot.telephonyTranscript?.trim() ? (
               <div className="mt-4 rounded-xl border border-violet-200/80 bg-violet-50/50 px-3 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-violet-900/90">AI transcript</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-                  {snapshot.telephonyTranscript.trim()}
-                </p>
+                <CollapsiblePanel
+                  title="AI transcript"
+                  titleClassName="text-xs font-semibold uppercase tracking-wide text-violet-900/90"
+                >
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+                    {snapshot.telephonyTranscript.trim()}
+                  </p>
+                </CollapsiblePanel>
               </div>
             ) : null}
 

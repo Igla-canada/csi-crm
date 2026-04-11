@@ -24,6 +24,10 @@ import { z } from "zod";
 
 import { normalizeStoredAccentHex, normalizeStoredAccentKey } from "@/lib/call-result-accents";
 import {
+  recordingPathFromStoredRef,
+  stableRecordingIdForPath,
+} from "@/lib/ringcentral/recording-content-path";
+import {
   AppointmentStatus,
   CallDirection,
   getSupabaseAdmin,
@@ -424,11 +428,11 @@ function parseTelephonyRecordingRefsJson(raw: unknown): Array<{ id: string; cont
   if (!Array.isArray(raw)) return null;
   const out: Array<{ id: string; contentUri: string }> = [];
   for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
+    const path = recordingPathFromStoredRef(item);
+    if (!path) continue;
     const o = item as Record<string, unknown>;
-    const id = String(o.id ?? "").trim();
-    const contentUri = String(o.contentUri ?? "").trim();
-    if (id && contentUri) out.push({ id, contentUri });
+    const id = stableRecordingIdForPath(path, String(o.id ?? ""));
+    out.push({ id, contentUri: path });
   }
   return out.length > 0 ? out : null;
 }

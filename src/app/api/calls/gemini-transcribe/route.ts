@@ -119,25 +119,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (e) {
     await clearCallLogGeminiPending(callLogId);
+    console.error("[gemini-transcribe]", callLogId, e);
+
     if (e instanceof GoogleGenerativeAIFetchError && e.status === 429) {
       return NextResponse.json(
         {
           error:
             "Gemini rate limit reached. Wait a minute and try again, or reduce how often you run Transcript.",
+          googleStatus: 429,
+          googleMessage: e.message,
         },
         { status: 429 },
       );
     }
+
     const raw = e instanceof Error ? e.message : "Transcription failed.";
-    if (/429|resource.exhausted|rate exceeded|too many requests/i.test(raw)) {
+    // Avoid matching "429" inside model ids (e.g. …-0429); require a real HTTP/status mention or Google quota codes.
+    const looksLikeGeminiQuota =
+      /\[\s*429\s/i.test(raw) ||
+      /\b429\s+Too\s+Many\s+Requests\b/i.test(raw) ||
+      /\bstatus\s*(?:code)?\s*[:=]?\s*429\b/i.test(raw) ||
+      /RESOURCE_EXHAUSTED|resource\s*exhausted|quota\s+exceeded|rate\s+limit\s+exceeded/i.test(raw);
+    if (looksLikeGeminiQuota) {
       return NextResponse.json(
         {
           error:
             "Gemini rate limit reached. Wait a minute and try again, or reduce how often you run Transcript.",
+          googleMessage: raw,
         },
         { status: 429 },
       );
     }
+
     return NextResponse.json({ error: raw }, { status: 500 });
   }
 }

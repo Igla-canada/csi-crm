@@ -17,6 +17,7 @@ import {
 } from "@/lib/crm";
 import { CallDirection } from "@/lib/db";
 import { getRingCentralAutoTranscribe, getRingCentralEnv } from "@/lib/ringcentral/env";
+import { recordingPathFromStoredRef, stableRecordingIdForPath } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
 import { dispositionFromRingCentralRecord } from "@/lib/ringcentral/call-result";
 import {
@@ -50,21 +51,17 @@ type RcCallRecord = {
 
 type RecordingRef = { id: string; contentUri: string };
 
-/** RingCentral often returns `id` + `uri` without `contentUri`; binary is at .../recording/{id}/content */
+/**
+ * RingCentral may send `contentUri`, or only `uri` (absolute URL or API path), or only `id`
+ * (binary at .../recording/{id}/content).
+ */
 function normalizeRecordingRef(raw: RcRecording | undefined | null): RecordingRef | undefined {
   if (!raw || typeof raw !== "object") return undefined;
-  const id = raw.id != null ? String(raw.id).trim() : "";
-  const contentUri = raw.contentUri != null ? String(raw.contentUri).trim() : "";
-  if (contentUri) {
-    return { id: id || "rc-recording", contentUri };
-  }
-  if (id) {
-    return {
-      id,
-      contentUri: `/restapi/v1.0/account/~/recording/${encodeURIComponent(id)}/content`,
-    };
-  }
-  return undefined;
+  const o = raw as Record<string, unknown>;
+  const path = recordingPathFromStoredRef(o);
+  if (!path) return undefined;
+  const id = stableRecordingIdForPath(path, String(o.id ?? ""));
+  return { id, contentUri: path };
 }
 
 /** Dedupe by recording id; order = top-level `recording`, `recordings[]`, then each leg’s `recording` (hold/transfer legs). */
