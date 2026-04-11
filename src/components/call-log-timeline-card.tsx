@@ -882,13 +882,15 @@ export function CallLogTimelineCard({
             {snapshot.hasTelephonyRecording &&
             canRequestTranscription &&
             !snapshot.telephonyTranscript?.trim() &&
+            !snapshot.telephonyAiSummary?.trim() &&
             !snapshot.telephonyAiPending ? (
               <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/50 px-3 py-2.5">
                 <p className="text-xs leading-relaxed text-slate-600">
-                  Transcripts are not automatic unless{" "}
-                  <span className="font-medium text-slate-800">RINGCENTRAL_AUTO_TRANSCRIBE=true</span> and RingCentral can
-                  reach your <span className="font-medium text-slate-800">APP_URL</span> webhook. You can start a job now
-                  for this recording.
+                  Run <span className="font-medium text-slate-800">Transcript</span> to send this recording to Gemini
+                  (server needs <span className="font-medium text-slate-800">GEMINI_API_KEY</span>
+                  ). The first recording segment is analyzed; full transcript and structured call insights appear below
+                  when it finishes. RingCentral&apos;s separate AI webhook (
+                  <span className="font-medium text-slate-800">RINGCENTRAL_AUTO_TRANSCRIBE</span>) is optional.
                 </p>
                 <button
                   type="button"
@@ -898,7 +900,7 @@ export function CallLogTimelineCard({
                     setTranscribeNote(null);
                     void (async () => {
                       try {
-                        const res = await fetch("/api/ringcentral/transcribe", {
+                        const res = await fetch("/api/calls/gemini-transcribe", {
                           method: "POST",
                           credentials: "include",
                           headers: { "Content-Type": "application/json" },
@@ -907,15 +909,13 @@ export function CallLogTimelineCard({
                         const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
                         if (!res.ok) {
                           const msg =
-                            (typeof data?.message === "string" && data.message) ||
                             (typeof data?.error === "string" && data.error) ||
+                            (typeof data?.message === "string" && data.message) ||
                             `Request failed (${res.status}).`;
                           setTranscribeNote(msg);
                           return;
                         }
-                        setTranscribeNote(
-                          "Transcription queued. Refresh in a moment — text appears below when RingCentral finishes.",
-                        );
+                        setTranscribeNote(null);
                         router.refresh();
                       } catch (e) {
                         setTranscribeNote(e instanceof Error ? e.message : "Request failed.");
@@ -926,7 +926,7 @@ export function CallLogTimelineCard({
                   }}
                   className="mt-2 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-800 disabled:opacity-50"
                 >
-                  {transcribePending ? "Starting…" : "Request AI transcript"}
+                  {transcribePending ? "Working…" : "Transcript"}
                 </button>
                 {transcribeNote ? (
                   <p className="mt-2 text-xs text-slate-700" role="status">
@@ -939,10 +939,11 @@ export function CallLogTimelineCard({
             {!canRequestTranscription &&
             snapshot.hasTelephonyRecording &&
             !snapshot.telephonyTranscript?.trim() &&
+            !snapshot.telephonyAiSummary?.trim() &&
             !snapshot.telephonyAiPending ? (
               <p className="mt-3 text-xs text-slate-500">
-                No AI transcript on file. Someone with call-log edit access or an admin can request one from this card, or
-                enable auto-transcribe in Workspace.
+                No AI transcript on file. Someone with call-log edit access or an admin can run{" "}
+                <span className="font-medium text-slate-600">Transcript</span> from Inbound call history or here.
               </p>
             ) : null}
 

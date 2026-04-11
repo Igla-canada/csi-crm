@@ -10,6 +10,8 @@ import {
   useRef,
   useState,
   useTransition,
+  type CSSProperties,
+  type ReactNode,
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
@@ -32,6 +34,76 @@ function formatWhenInShopTz(iso: string, timeZone: string) {
   return format(z, "MMM d, yyyy · h:mm a");
 }
 
+function InboundHistorySummaryHoverTip({
+  fullText,
+  children,
+}: {
+  fullText: string;
+  children: ReactNode;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [style, setStyle] = useState<CSSProperties>({});
+
+  if (!fullText || fullText === "—") {
+    return <>{children}</>;
+  }
+
+  const updatePosition = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    const gap = 6;
+    const spaceAbove = r.top;
+    const above = spaceAbove > 96;
+    const maxW = Math.min(384, typeof window !== "undefined" ? window.innerWidth - margin * 2 : 384);
+    let left = r.left;
+    if (typeof window !== "undefined") {
+      left = Math.max(margin, Math.min(left, window.innerWidth - margin - maxW));
+    }
+    if (above) {
+      setStyle({
+        position: "fixed",
+        left,
+        top: r.top - gap,
+        transform: "translateY(-100%)",
+        maxWidth: maxW,
+        zIndex: 300,
+      });
+    } else {
+      setStyle({
+        position: "fixed",
+        left,
+        top: r.bottom + gap,
+        maxWidth: maxW,
+        zIndex: 300,
+      });
+    }
+  };
+
+  return (
+    <>
+      <span
+        className="inline-block max-w-full cursor-help"
+        onMouseEnter={(e) => {
+          updatePosition(e.currentTarget);
+          setVisible(true);
+        }}
+        onMouseLeave={() => setVisible(false)}
+      >
+        {children}
+      </span>
+      {visible ? (
+        <span
+          role="tooltip"
+          className="pointer-events-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-xs leading-relaxed text-slate-800 shadow-lg ring-1 ring-slate-900/5"
+          style={style}
+        >
+          {fullText}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 function InboundHistorySummaryCell({
   row,
   canRunGeminiTranscribe,
@@ -51,11 +123,16 @@ function InboundHistorySummaryCell({
     !row.geminiTranscribePending &&
     !row.rcAiTranscribePending;
 
-  const text = row.displaySummary?.trim() || "—";
+  const fullSummary = row.displaySummary?.trim() ?? "";
+  const text = fullSummary || "—";
 
   return (
     <div className="space-y-1.5">
-      <span className="line-clamp-3 text-sm leading-snug">{text}</span>
+      <InboundHistorySummaryHoverTip fullText={fullSummary}>
+        <span className="line-clamp-3 text-sm leading-snug" title={fullSummary || undefined}>
+          {text}
+        </span>
+      </InboundHistorySummaryHoverTip>
       {row.geminiTranscribePending ? (
         <p className="text-[11px] font-medium text-slate-500">Transcribing…</p>
       ) : null}
