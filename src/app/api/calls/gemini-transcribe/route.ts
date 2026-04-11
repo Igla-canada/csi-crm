@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { GoogleGenerativeAIFetchError } from "@google/generative-ai";
+
 import { getCurrentUserForApi } from "@/lib/auth";
-import { CallDirection, getSupabaseAdmin, tables } from "@/lib/db";
+import { getSupabaseAdmin, tables } from "@/lib/db";
 import {
   clearCallLogGeminiPending,
   lockCallLogForGeminiTranscription,
@@ -63,9 +65,6 @@ export async function POST(req: NextRequest) {
   if (!row) {
     return NextResponse.json({ error: "Call not found." }, { status: 404 });
   }
-  if (String(row.direction) !== CallDirection.INBOUND) {
-    return NextResponse.json({ error: "Only inbound calls can be transcribed from call history." }, { status: 400 });
-  }
 
   const transcript = String((row.telephonyTranscript as string | null) ?? "").trim();
   const aiSummary = String((row.telephonyAiSummary as string | null) ?? "").trim();
@@ -97,12 +96,15 @@ export async function POST(req: NextRequest) {
     const happenedAt = new Date(String(row.happenedAt ?? ""));
     const happenedAtIso = Number.isNaN(happenedAt.getTime()) ? new Date().toISOString() : happenedAt.toISOString();
 
+    const directionRaw = String((row.direction as string | null) ?? "").trim();
+    const directionNorm = directionRaw.toUpperCase() || "UNKNOWN";
+
     const result = await transcribeCallRecordingWithGemini({
       audioBase64: audio.buffer.toString("base64"),
       mimeType: audio.mimeType,
       shopTimeZone: getAppTimezone(),
       happenedAtIso,
-      direction: String(row.direction),
+      direction: directionNorm,
       telephonyResult: String((row.telephonyResult as string | null) ?? "").trim() || null,
       contactName: String((row.contactName as string | null) ?? "").trim() || null,
       contactPhone: String((row.contactPhone as string | null) ?? "").trim() || null,
@@ -117,7 +119,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (e) {
     await clearCallLogGeminiPending(callLogId);
-    const message = e instanceof Error ? e.message : "Transcription failed.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    if (e instanceof GoogleGenerativeAIFetchError && e.status === 429) {
+      return NextResponse.json(
+        {
+          error:
+            "Gemini rate limit reached. Wait a minute and try again, or reduce how often you run Transcript.",
+        },
+        { status: 429 },
+      );
+    }
+    const raw = e instanceof Error ? e.message : "Transcription failed.";
+    if (/429|resource.exhausted|rate exceeded|too many requests/i.test(raw)) {
+      return NextResponse.json(
+        {
+          error:
+            "Gemini rate limit reached. Wait a minute and try again, or reduce how often you run Transcript.",
+        },
+        { status: 429 },
+      );
+    }
+    return NextResponse.json({ error: raw }, { status: 500 });
   }
 }

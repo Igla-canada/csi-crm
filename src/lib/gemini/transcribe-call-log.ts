@@ -1,6 +1,6 @@
 import "server-only";
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from "@google/generative-ai";
 
 import { getGeminiApiKey, getGeminiTranscribeModel } from "@/lib/gemini/env";
 import {
@@ -14,6 +14,16 @@ export type GeminiCallTranscriptionResult = {
   transcript: string;
   summary: string;
 };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isGeminiRateLimitError(e: unknown): boolean {
+  if (e instanceof GoogleGenerativeAIFetchError && e.status === 429) return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return /429|resource.?exhausted|rate exceeded|too many requests|quota/i.test(msg);
+}
 
 function buildPrompt(context: {
   shopTimeZone: string;
@@ -91,7 +101,7 @@ export async function transcribeCallRecordingWithGemini(input: {
     contactPhone: input.contactPhone,
   });
 
-  const result = await model.generateContent([
+  const parts = [
     { text: prompt },
     {
       inlineData: {
@@ -99,7 +109,26 @@ export async function transcribeCallRecordingWithGemini(input: {
         data: input.audioBase64,
       },
     },
-  ]);
+  ];
+
+  const maxAttempts = 5;
+  let result: Awaited<ReturnType<typeof model.generateContent>> | undefined;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      result = await model.generateContent(parts);
+      break;
+    } catch (e) {
+      const retryable = isGeminiRateLimitError(e) && attempt < maxAttempts - 1;
+      if (!retryable) {
+        throw e;
+      }
+      const delayMs = Math.min(45_000, 2500 * 2 ** attempt);
+      await sleep(delayMs);
+    }
+  }
+  if (!result) {
+    throw new Error("Gemini transcription failed after retries.");
+  }
 
   const text = result.response.text();
   const rawJson = stripGeminiJsonFence(text);
