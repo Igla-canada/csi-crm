@@ -26,8 +26,85 @@ import { formatInboundCallHistoryDuration } from "@/lib/inbound-call-history-for
 import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
 import { Pause, Play } from "lucide-react";
 
-function formatWhen(iso: string) {
-  return format(parseISO(iso), "MMM d, yyyy · h:mm a");
+function formatWhenInShopTz(iso: string, timeZone: string) {
+  const d = parseISO(iso);
+  const z = new TZDate(d.getTime(), timeZone);
+  return format(z, "MMM d, yyyy · h:mm a");
+}
+
+function InboundHistorySummaryCell({
+  row,
+  canRunGeminiTranscribe,
+  refetch,
+}: {
+  row: InboundCallHistoryRowDto;
+  canRunGeminiTranscribe: boolean;
+  refetch: () => void | Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const showTranscript =
+    canRunGeminiTranscribe &&
+    (row.recordingCount ?? 0) > 0 &&
+    !row.hasTranscription &&
+    !row.geminiTranscribePending &&
+    !row.rcAiTranscribePending;
+
+  const text = row.displaySummary?.trim() || "—";
+
+  return (
+    <div className="space-y-1.5">
+      <span className="line-clamp-3 text-sm leading-snug">{text}</span>
+      {row.geminiTranscribePending ? (
+        <p className="text-[11px] font-medium text-slate-500">Transcribing…</p>
+      ) : null}
+      {showTranscript ? (
+        <div className="flex flex-col items-start gap-1">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              setPending(true);
+              setErr(null);
+              void (async () => {
+                try {
+                  const res = await fetch("/api/calls/gemini-transcribe", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ callLogId: row.id }),
+                  });
+                  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+                  if (!res.ok) {
+                    const msg =
+                      (typeof data?.error === "string" && data.error) ||
+                      (typeof data?.message === "string" && data.message) ||
+                      `Request failed (${res.status}).`;
+                    setErr(msg);
+                    return;
+                  }
+                  await refetch();
+                } catch (e) {
+                  setErr(e instanceof Error ? e.message : "Request failed.");
+                } finally {
+                  setPending(false);
+                }
+              })();
+            }}
+            className="rounded-lg border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-900 hover:bg-violet-100 disabled:opacity-50"
+          >
+            {pending ? "Working…" : "Transcript"}
+          </button>
+          {err ? (
+            <p className="max-w-[14rem] text-[11px] text-red-600" role="alert">
+              {err}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function recordingLabel(count: number): { text: string; title: string } {
@@ -249,6 +326,7 @@ type InboundCallHistoryTableProps = {
   initialDateFrom?: string;
   initialDateTo?: string;
   dateFilterTimezone: string;
+  canRunGeminiTranscribe?: boolean;
 };
 
 export function InboundCallHistoryTable({
@@ -256,6 +334,7 @@ export function InboundCallHistoryTable({
   initialDateFrom = "",
   initialDateTo = "",
   dateFilterTimezone,
+  canRunGeminiTranscribe = false,
 }: InboundCallHistoryTableProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -502,7 +581,9 @@ export function InboundCallHistoryTable({
 
             return (
               <tr key={row.id} className="border-b border-slate-100 last:border-0">
-                <td className="py-3 pr-4 align-top text-slate-700">{formatWhen(row.happenedAt)}</td>
+                <td className="py-3 pr-4 align-top text-slate-700">
+                  {formatWhenInShopTz(row.happenedAt, dateFilterTimezone)}
+                </td>
                 <td className="max-w-[140px] py-3 pr-3 align-top text-slate-700">
                   <span className="line-clamp-2 text-sm" title={row.telephonyResult ?? undefined}>
                     {row.telephonyResult?.trim() || "—"}
@@ -525,7 +606,11 @@ export function InboundCallHistoryTable({
                 <td className="py-3 pr-4 align-top text-slate-700">{row.contactName?.trim() || "—"}</td>
                 <td className="py-3 pr-4 align-top text-slate-700">{row.contactPhone?.trim() || "—"}</td>
                 <td className="max-w-xs py-3 pr-4 align-top text-slate-600">
-                  <span className="line-clamp-2">{row.summary?.trim() || "—"}</span>
+                  <InboundHistorySummaryCell
+                    row={row}
+                    canRunGeminiTranscribe={canRunGeminiTranscribe}
+                    refetch={fetchRows}
+                  />
                 </td>
                 <td className="py-3 pl-2 align-top text-right">
                   <CallHistoryOpenLogButton callLogId={row.id} disabled={openLogDisabled} />

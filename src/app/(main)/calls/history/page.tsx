@@ -46,6 +46,10 @@ export default async function CallHistoryPage({
     happenedAt: r.happenedAt.toISOString(),
     telephonyDraft: r.telephonyDraft,
     summary: r.summary,
+    displaySummary: r.displaySummary,
+    hasTranscription: r.hasTranscription,
+    geminiTranscribePending: r.geminiTranscribePending,
+    rcAiTranscribePending: r.rcAiTranscribePending,
     openedFromCallHistoryAt: r.openedFromCallHistoryAt?.toISOString() ?? null,
     ringCentralCallLogId: r.ringCentralCallLogId,
     telephonyResult: r.telephonyResult,
@@ -87,6 +91,7 @@ export default async function CallHistoryPage({
             initialDateFrom={effectiveFilter?.dateFrom?.trim() ?? ""}
             initialDateTo={effectiveFilter?.dateTo?.trim() ?? ""}
             dateFilterTimezone={getAppTimezone()}
+            canRunGeminiTranscribe={caps.canConfigure || caps.canEditCallLogs}
           />
         </Suspense>
       </Card>

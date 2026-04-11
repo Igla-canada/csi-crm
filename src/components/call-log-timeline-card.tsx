@@ -25,6 +25,7 @@ import {
   CALL_OUTCOME_BOOKED_CODE,
   writeBookingFromCallToSession,
 } from "@/lib/booking-from-call";
+import type { TelephonyGeminiInsights } from "@/lib/telephony-gemini-insights";
 
 const CALLBACK_NEEDED_OUTCOME_CODE = "CALLBACK_NEEDED";
 import {
@@ -76,6 +77,8 @@ export type CallLogCardSnapshot = {
   telephonyAiSummary?: string | null;
   /** Async AI job in flight (transcript not yet stored). */
   telephonyAiPending?: boolean;
+  /** Parsed Gemini JSON (details, score, notes) when transcribed via CRM. */
+  telephonyGeminiStructured?: TelephonyGeminiInsights | null;
   /** Carrier disposition from RingCentral (e.g. Voicemail, Missed). */
   telephonyResult?: string | null;
   /** Listed on Tasks until staff saves the call or changes result. */
@@ -106,6 +109,78 @@ function fieldOrDash(value: string) {
 }
 
 const PLAYBACK_RATES = [1, 1.5, 2] as const;
+
+function TelephonyGeminiInsightsBlock({ insights }: { insights: TelephonyGeminiInsights }) {
+  const d = insights.callLogDetails;
+  const score = insights.callScore;
+
+  const scoreLine = (label: string, part?: { score?: string; rationale?: string } | null) => {
+    if (!part?.score?.trim() && !part?.rationale?.trim()) return null;
+    return (
+      <div className="mt-2 text-sm">
+        <p className="font-semibold text-slate-900">
+          {label}
+          {part?.score?.trim() ? <span className="font-normal text-slate-600"> — {part.score.trim()}</span> : null}
+        </p>
+        {part?.rationale?.trim() ? (
+          <p className="mt-1 leading-relaxed text-slate-700">{part.rationale.trim()}</p>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <div className="mt-4 rounded-xl border border-emerald-200/90 bg-emerald-50/35 px-3 py-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-900/90">AI call insights (Gemini)</p>
+
+      {d ? (
+        <div className="mt-3">
+          <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-500">Call Log Details</p>
+          <dl className="mt-2 grid gap-1.5 text-sm sm:grid-cols-[minmax(0,11rem)_1fr]">
+            <dt className="text-slate-500">Date and time</dt>
+            <dd className="text-slate-900">{fieldOrDash(d.dateAndTime ?? "")}</dd>
+            <dt className="text-slate-500">Vehicle</dt>
+            <dd className="text-slate-900">{fieldOrDash(d.vehicle ?? "")}</dd>
+            <dt className="text-slate-500">Product / service</dt>
+            <dd className="text-slate-900">{fieldOrDash(d.productOrService ?? "")}</dd>
+            <dt className="text-slate-500">Price / quote</dt>
+            <dd className="text-slate-900">{fieldOrDash(d.priceOrQuote ?? "")}</dd>
+            <dt className="text-slate-500">Direction</dt>
+            <dd className="text-slate-900">{fieldOrDash(d.direction ?? "")}</dd>
+            <dt className="text-slate-500">Call result</dt>
+            <dd className="text-slate-900">{fieldOrDash(d.callResult ?? "")}</dd>
+          </dl>
+        </div>
+      ) : null}
+
+      {insights.callSummary?.trim() ? (
+        <div className="mt-4 border-t border-emerald-200/80 pt-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-500">Call Summary</p>
+          <p className="mt-2 text-sm leading-relaxed text-slate-800">{insights.callSummary.trim()}</p>
+        </div>
+      ) : null}
+
+      {insights.callbackNotes?.trim() ? (
+        <div className="mt-4 border-t border-emerald-200/80 pt-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-500">Callback Notes</p>
+          <p className="mt-2 text-sm leading-relaxed text-slate-800">{insights.callbackNotes.trim()}</p>
+        </div>
+      ) : null}
+
+      {score && (score.overall?.trim() || score.efficiency || score.clarity || score.customerExperience) ? (
+        <div className="mt-4 border-t border-emerald-200/80 pt-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-500">Call Score</p>
+          {score.overall?.trim() ? (
+            <p className="mt-2 text-sm font-semibold text-slate-900">{score.overall.trim()}</p>
+          ) : null}
+          {scoreLine("Efficiency", score.efficiency)}
+          {scoreLine("Clarity", score.clarity)}
+          {scoreLine("Customer experience", score.customerExperience)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function TelephonyRecordingPlayer({
   callLogId,
@@ -884,7 +959,9 @@ export function CallLogTimelineCard({
               </div>
             ) : null}
 
-            {snapshot.telephonyAiSummary?.trim() ? (
+            {snapshot.telephonyGeminiStructured ? (
+              <TelephonyGeminiInsightsBlock insights={snapshot.telephonyGeminiStructured} />
+            ) : snapshot.telephonyAiSummary?.trim() ? (
               <div className="mt-3 rounded-xl border border-indigo-200/80 bg-indigo-50/50 px-3 py-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-indigo-900/90">AI summary</p>
                 <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">

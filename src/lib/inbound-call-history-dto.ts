@@ -17,4 +17,10 @@ export type InboundCallHistoryRowDto = {
   durationSeconds: number | null;
   /** Number of distinct recording files on the log. */
   recordingCount: number;
+  /** Summary column text: AI call-summary paragraph when present, else staff `summary`. */
+  displaySummary: string;
+  /** True when a transcript or AI summary exists (hides the Transcript button). */
+  hasTranscription: boolean;
+  geminiTranscribePending: boolean;
+  rcAiTranscribePending: boolean;
 };

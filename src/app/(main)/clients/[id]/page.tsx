@@ -22,6 +22,8 @@ import {
 import { paymentBadgeLabelForAppointment, paymentBadgeLabelForCall } from "@/lib/payment-badges";
 import { parseCallDirectionSearchParam } from "@/lib/call-direction-search-param";
 import { normalizePhone } from "@/lib/phone";
+import { getAppTimezone } from "@/lib/google-calendar/env";
+import { formatShopDateShort, formatShopDateTime } from "@/lib/shop-datetime-format";
 import { getTorontoNowDatetimeLocalValue } from "@/lib/toronto-datetime-input";
 import { getUserCapabilities } from "@/lib/user-privileges";
 
@@ -38,14 +40,6 @@ type ClientPageProps = {
     openCallLog?: string;
   }>;
 };
-
-function formatWhen(d: Date) {
-  return format(d, "MMM d, yyyy · h:mm a");
-}
-
-function formatDateShort(d: Date) {
-  return format(d, "MMM d, yyyy");
-}
 
 function phonesMatch(a?: string | null, b?: string | null) {
   const na = normalizePhone(a);
@@ -102,6 +96,8 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
   if (!client) {
     notFound();
   }
+
+  const shopTz = getAppTimezone();
 
   const openCallLogCandidate = openCallLogRaw?.trim() ?? "";
   const openCallLogId =
@@ -207,7 +203,9 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
               {client.callLogs.length === 1 ? "" : "s"} on file
             </p>
             {lastCall ? (
-              <p className="text-xs text-slate-500">Last call: {formatDateShort(lastCall.happenedAt)}</p>
+              <p className="text-xs text-slate-500">
+                Last call: {formatShopDateShort(lastCall.happenedAt, shopTz)}
+              </p>
             ) : null}
           </div>
         }
@@ -353,7 +351,7 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                         ? {
                             id: linkedApt.id,
                             title: linkedApt.title,
-                            startAtLabel: formatWhen(linkedApt.startAt),
+                            startAtLabel: formatShopDateTime(linkedApt.startAt, shopTz),
                           }
                         : null;
                       const paymentBadgeLabel = paymentBadgeLabelForCall(
@@ -381,8 +379,8 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                             id: call.id,
                             happenedAtIso: call.happenedAt.toISOString(),
                             followUpAtIso: call.followUpAt?.toISOString() ?? null,
-                            happenedAtLabel: formatWhen(call.happenedAt),
-                            followUpAtLabel: call.followUpAt ? formatWhen(call.followUpAt) : null,
+                            happenedAtLabel: formatShopDateTime(call.happenedAt, shopTz),
+                            followUpAtLabel: call.followUpAt ? formatShopDateTime(call.followUpAt, shopTz) : null,
                             loggedByName: call.user.name,
                             direction: call.direction,
                             outcomeCode: call.outcomeCode,
@@ -429,7 +427,9 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                             })(),
                             telephonyTranscript: call.telephonyTranscript,
                             telephonyAiSummary: call.telephonyAiSummary,
-                            telephonyAiPending: Boolean(call.telephonyAiJobId?.trim()),
+                            telephonyAiPending:
+                              Boolean(call.telephonyAiJobId?.trim()) || call.telephonyGeminiPending,
+                            telephonyGeminiStructured: call.telephonyGeminiStructured,
                             telephonyResult: call.telephonyResult,
                             telephonyCallbackPending: call.telephonyCallbackPending,
                           }}

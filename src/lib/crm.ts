@@ -1,5 +1,6 @@
 import "server-only";
 
+import { parseTelephonyGeminiInsights, type TelephonyGeminiInsights } from "@/lib/telephony-gemini-insights";
 import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
 import {
   addDays,
@@ -147,6 +148,9 @@ export type CallLogWithRelations = {
   telephonyAiSummary: string | null;
   telephonyDraft: boolean;
   telephonyAiJobId: string | null;
+  /** Parsed Gemini JSON (call details, score, notes) when present. */
+  telephonyGeminiStructured: TelephonyGeminiInsights | null;
+  telephonyGeminiPending: boolean;
   telephonyResult: string | null;
   telephonyCallbackPending: boolean;
   /** Set when staff uses Call history → Open log (disables repeat clicks). */
@@ -525,6 +529,10 @@ async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLog
       telephonyAiSummary: (base.telephonyAiSummary as string | null) ?? null,
       telephonyDraft: Boolean(base.telephonyDraft),
       telephonyAiJobId: (base.telephonyAiJobId as string | null) ?? null,
+      telephonyGeminiStructured: parseTelephonyGeminiInsights(
+        "telephonyGeminiStructured" in base ? base.telephonyGeminiStructured : null,
+      ),
+      telephonyGeminiPending: "telephonyGeminiPending" in base ? Boolean(base.telephonyGeminiPending) : false,
       telephonyResult: (base.telephonyResult as string | null) ?? null,
       telephonyCallbackPending: Boolean(base.telephonyCallbackPending),
       openedFromCallHistoryAt: base.openedFromCallHistoryAt
@@ -2249,6 +2257,17 @@ export type InboundCallHistoryRow = {
   durationSeconds: number | null;
   /** Distinct recording files linked on the log. */
   recordingCount: number;
+  telephonyTranscript: string | null;
+  telephonyAiSummary: string | null;
+  telephonyGeminiPending: boolean;
+  telephonyAiJobId: string | null;
+  /** AI narrative for the history table when present; otherwise staff `summary`. */
+  displaySummary: string;
+  /** True when any AI or stored transcript text exists (hides “Transcript” on the table). */
+  hasTranscription: boolean;
+  geminiTranscribePending: boolean;
+  /** RingCentral async speech job queued (webhook pending). */
+  rcAiTranscribePending: boolean;
 };
 
 const INBOUND_CALL_HISTORY_LIMIT = 200;
@@ -2355,20 +2374,17 @@ function inboundHistoryRecordingCountFromRow(row: Record<string, unknown>): numb
   return uri ? 1 : 0;
 }
 
-const INBOUND_HISTORY_LIST_SELECT_BASE =
+const INBOUND_HISTORY_LIST_SELECT_CORE =
   "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingContentUri";
+
+const INBOUND_HISTORY_LIST_GEMINI_FIELDS =
+  ",telephonyTranscript,telephonyAiSummary,telephonyGeminiPending,telephonyAiJobId";
+
+const INBOUND_HISTORY_LIST_SELECT_BASE = `${INBOUND_HISTORY_LIST_SELECT_CORE}${INBOUND_HISTORY_LIST_GEMINI_FIELDS}`;
 
 const INBOUND_HISTORY_LIST_SELECT_WITH_REFS = `${INBOUND_HISTORY_LIST_SELECT_BASE},telephonyRecordingRefs`;
 
-function inboundHistoryListSelectErrorMissingRefsColumn(error: { message?: string; details?: string } | null): boolean {
-  if (!error) return false;
-  const blob = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-  return (
-    blob.includes("telephonyrecordingrefs") ||
-    (blob.includes("column") && blob.includes("does not exist")) ||
-    blob.includes("42703")
-  );
-}
+const INBOUND_HISTORY_LIST_SELECT_CORE_WITH_REFS = `${INBOUND_HISTORY_LIST_SELECT_CORE},telephonyRecordingRefs`;
 
 export async function listInboundCallHistory(
   filter?: InboundCallHistoryDateFilter | null,
@@ -2387,9 +2403,16 @@ export async function listInboundCallHistory(
       .limit(limit);
   };
 
-  let res = await build(INBOUND_HISTORY_LIST_SELECT_WITH_REFS);
-  if (res.error && inboundHistoryListSelectErrorMissingRefsColumn(res.error)) {
-    res = await build(INBOUND_HISTORY_LIST_SELECT_BASE);
+  const selectAttempts = [
+    INBOUND_HISTORY_LIST_SELECT_WITH_REFS,
+    INBOUND_HISTORY_LIST_SELECT_CORE_WITH_REFS,
+    INBOUND_HISTORY_LIST_SELECT_BASE,
+    INBOUND_HISTORY_LIST_SELECT_CORE,
+  ];
+
+  let res = await build(selectAttempts[0]!);
+  for (let i = 1; i < selectAttempts.length && res.error; i++) {
+    res = await build(selectAttempts[i]!);
   }
   if (res.error) throw res.error;
   const list = (res.data ?? []) as unknown as Array<Record<string, unknown>>;
@@ -2402,6 +2425,14 @@ export async function listInboundCallHistory(
       row.telephonyMetadata && typeof row.telephonyMetadata === "object" && !Array.isArray(row.telephonyMetadata)
         ? (row.telephonyMetadata as Record<string, unknown>)
         : null;
+    const transcript = String(
+      ("telephonyTranscript" in row ? (r.telephonyTranscript as string | null) : null) ?? "",
+    ).trim();
+    const aiSummary = String(
+      ("telephonyAiSummary" in row ? (r.telephonyAiSummary as string | null) : null) ?? "",
+    ).trim();
+    const staffSummary = String(r.summary ?? "");
+    const hasTranscription = Boolean(transcript || aiSummary);
     return {
       id: String(r.id ?? ""),
       clientId: String(r.clientId ?? ""),
@@ -2410,7 +2441,7 @@ export async function listInboundCallHistory(
       contactName: (r.contactName as string | null) ?? null,
       happenedAt: toDate(String(r.happenedAt ?? "")),
       telephonyDraft: Boolean(r.telephonyDraft),
-      summary: String(r.summary ?? ""),
+      summary: staffSummary,
       openedFromCallHistoryAt: r.openedFromCallHistoryAt
         ? toDate(String(r.openedFromCallHistoryAt))
         : null,
@@ -2418,6 +2449,15 @@ export async function listInboundCallHistory(
       telephonyResult: String((row.telephonyResult as string | null) ?? "").trim() || null,
       durationSeconds: telephonyDurationSecondsFromMetadata(meta),
       recordingCount: inboundHistoryRecordingCountFromRow(row),
+      telephonyTranscript: transcript || null,
+      telephonyAiSummary: aiSummary || null,
+      telephonyGeminiPending: "telephonyGeminiPending" in row ? Boolean(r.telephonyGeminiPending) : false,
+      telephonyAiJobId:
+        String(("telephonyAiJobId" in row ? (r.telephonyAiJobId as string | null) : null) ?? "").trim() || null,
+      displaySummary: aiSummary || staffSummary,
+      hasTranscription,
+      geminiTranscribePending: Boolean(r.telephonyGeminiPending),
+      rcAiTranscribePending: Boolean(String((r.telephonyAiJobId as string | null) ?? "").trim()),
     };
   });
 }
@@ -3029,6 +3069,39 @@ function extractRingCentralAiWebhookFields(
 
 export async function setCallLogTelephonyAiJobId(callLogId: string, jobId: string): Promise<void> {
   const { error } = await sb().from(tables.CallLog).update({ telephonyAiJobId: jobId }).eq("id", callLogId);
+  if (error) throw error;
+}
+
+/** Prevents duplicate Gemini runs; returns false if already locked or column missing. */
+export async function lockCallLogForGeminiTranscription(callLogId: string): Promise<boolean> {
+  const { data, error } = await sb()
+    .from(tables.CallLog)
+    .update({ telephonyGeminiPending: true })
+    .eq("id", callLogId)
+    .eq("telephonyGeminiPending", false)
+    .select("id");
+  if (error) throw error;
+  return Boolean(data?.length);
+}
+
+export async function persistGeminiCallTranscription(
+  callLogId: string,
+  payload: { transcript: string; summary: string; structured: unknown },
+): Promise<void> {
+  const { error } = await sb()
+    .from(tables.CallLog)
+    .update({
+      telephonyTranscript: payload.transcript,
+      telephonyAiSummary: payload.summary,
+      telephonyGeminiStructured: payload.structured as object,
+      telephonyGeminiPending: false,
+    })
+    .eq("id", callLogId);
+  if (error) throw error;
+}
+
+export async function clearCallLogGeminiPending(callLogId: string): Promise<void> {
+  const { error } = await sb().from(tables.CallLog).update({ telephonyGeminiPending: false }).eq("id", callLogId);
   if (error) throw error;
 }
 

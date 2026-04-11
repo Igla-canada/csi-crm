@@ -138,6 +138,8 @@ CREATE TABLE "CallLog" (
     "telephonyAiSummary" TEXT,
     "telephonyDraft" BOOLEAN NOT NULL DEFAULT false,
     "telephonyAiJobId" TEXT,
+    "telephonyGeminiStructured" JSONB,
+    "telephonyGeminiPending" BOOLEAN NOT NULL DEFAULT false,
     "telephonyResult" TEXT,
     "telephonyCallbackPending" BOOLEAN NOT NULL DEFAULT false,
     "openedFromCallHistoryAt" TIMESTAMP(3),

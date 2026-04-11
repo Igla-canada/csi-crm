@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@date-fns/tz": "^1.4.1",
+    "@google/generative-ai": "^0.24.1",
     "@ringcentral/sdk": "^5.0.6",
     "@supabase/supabase-js": "^2.101.1",
     "clsx": "^2.1.1",
