@@ -94,7 +94,7 @@ function InboundHistorySummaryHoverTip({
       {visible ? (
         <span
           role="tooltip"
-          className="pointer-events-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-xs leading-relaxed text-slate-800 shadow-lg ring-1 ring-slate-900/5"
+          className="pointer-events-none rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-left text-xs leading-relaxed text-slate-900 shadow-md"
           style={style}
         >
           {fullText}
@@ -123,16 +123,17 @@ function InboundHistorySummaryCell({
     !row.geminiTranscribePending &&
     !row.rcAiTranscribePending;
 
-  const fullSummary = row.displaySummary?.trim() ?? "";
-  const text = fullSummary || "—";
+  const rawSummary = row.displaySummary?.trim() ?? "";
+  const effectiveSummary = rawSummary === TELEPHONY_CALL_SUMMARY_PLACEHOLDER ? "" : rawSummary;
+  const showSummaryText = Boolean(effectiveSummary);
 
   return (
     <div className="space-y-1.5">
-      <InboundHistorySummaryHoverTip fullText={fullSummary}>
-        <span className="line-clamp-3 text-sm leading-snug" title={fullSummary || undefined}>
-          {text}
-        </span>
-      </InboundHistorySummaryHoverTip>
+      {showSummaryText ? (
+        <InboundHistorySummaryHoverTip fullText={effectiveSummary}>
+          <span className="line-clamp-3 text-sm leading-snug">{effectiveSummary}</span>
+        </InboundHistorySummaryHoverTip>
+      ) : null}
       {row.geminiTranscribePending ? (
         <p className="text-[11px] font-medium text-slate-500">Transcribing…</p>
       ) : null}
