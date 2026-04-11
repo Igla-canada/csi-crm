@@ -478,6 +478,14 @@ export async function syncRingCentralVoiceCallLogsFromApi(
     const records = body.records ?? [];
     result.fetched += records.length;
 
+    type RowWork = {
+      rec: RcCallRecord;
+      extra: RecordingRef[];
+      cid: string;
+      needAccountDetail: boolean;
+    };
+    const rowWorks: RowWork[] = [];
+
     for (const rec of records) {
       const fromSiblingsOnPage = mergeRecordingRefsInOrder(
         ...records
@@ -490,10 +498,27 @@ export async function syncRingCentralVoiceCallLogsFromApi(
         extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId),
       );
       const haveAnyRecording = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(rec), extra).length > 0;
-      if (!haveAnyRecording && cid) {
-        extra = mergeRecordingRefsInOrder(await recordingRefsFromAccountCallLogDetail(platform, cid), extra);
+      rowWorks.push({
+        rec,
+        extra,
+        cid,
+        needAccountDetail: !haveAnyRecording && Boolean(cid),
+      });
+    }
+
+    const batchIds = rowWorks.filter((w) => w.needAccountDetail).map((w) => w.cid);
+    const detailById = await fetchAccountCallLogDetailsBatch(platform, batchIds);
+
+    for (const w of rowWorks) {
+      let extra = w.extra;
+      if (w.needAccountDetail && w.cid) {
+        const detail = detailById.get(w.cid);
+        const refs = detail
+          ? extractAllRecordingsFromRcRecord(detail)
+          : await recordingRefsFromAccountCallLogDetail(platform, w.cid);
+        extra = mergeRecordingRefsInOrder(refs, extra);
       }
-      const imported = toImportedCall(rec, extra);
+      const imported = toImportedCall(w.rec, extra);
       if (!imported) {
         result.skipped += 1;
         continue;
@@ -661,6 +686,66 @@ async function tryFetchCallLogRecordDetailed(platform: RcPlatform, callLogId: st
   return null;
 }
 
+type RcBatchCallLogPart = {
+  resourceId?: string | number;
+  status?: number;
+  body?: unknown;
+};
+
+/**
+ * RingCentral supports batch GET for homogeneous call-log records: comma-separated ids in the path.
+ * Response is often HTTP 207 with `application/vnd.ringcentral.multipart+json` (array of per-id status + body).
+ */
+async function fetchAccountCallLogDetailsBatch(
+  platform: RcPlatform,
+  ids: string[],
+): Promise<Map<string, RcCallRecord>> {
+  const out = new Map<string, RcCallRecord>();
+  const clean = [...new Set(ids.map((i) => String(i).trim()).filter(Boolean))];
+  if (clean.length === 0) return out;
+
+  const chunkSize = 10;
+  for (let i = 0; i < clean.length; i += chunkSize) {
+    const chunk = clean.slice(i, i + chunkSize);
+    const path = `/restapi/v1.0/account/~/call-log/${chunk.map(encodeURIComponent).join(",")}`;
+    try {
+      const resp = await rcSyncGet(platform, path, { view: "Detailed" });
+
+      if (resp.status === 207) {
+        let parsed: unknown;
+        try {
+          parsed = await resp.json();
+        } catch {
+          continue;
+        }
+        if (Array.isArray(parsed)) {
+          for (const p of parsed as RcBatchCallLogPart[]) {
+            if (p.status !== 200 || !p.body || typeof p.body !== "object") continue;
+            const body = p.body as RcCallRecord;
+            let rid = String(p.resourceId ?? "").trim();
+            if (!rid) rid = String(body.id ?? "").trim();
+            if (rid) out.set(rid, body);
+          }
+        }
+        continue;
+      }
+
+      if (resp.ok && resp.status === 200) {
+        try {
+          const one = (await resp.json()) as RcCallRecord;
+          const id = String(one?.id ?? "").trim();
+          if (id) out.set(id, one);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* caller falls back per id */
+    }
+  }
+  return out;
+}
+
 async function findAccountCallLogRecordByIdInWindow(
   platform: RcPlatform,
   rcCallLogId: string,
@@ -779,7 +864,8 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     );
     const cid = String(primary.id ?? "").trim();
     const fromDetail = cid ? await tryFetchExtensionCallLogDetailRecordings(platform, cid) : [];
-    const fromAccountDetail = cid ? await recordingRefsFromAccountCallLogDetail(platform, cid) : [];
+    const accountPrimaryDetail = cid ? await tryFetchCallLogRecordDetailed(platform, cid) : null;
+    const fromAccountDetail = accountPrimaryDetail ? extractAllRecordingsFromRcRecord(accountPrimaryDetail) : [];
     return toImportedCall(
       primary,
       mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
@@ -815,7 +901,8 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     }
   }
 
-  let rec = await tryFetchCallLogRecordDetailed(platform, rcKey);
+  const accountDetailRec = await tryFetchCallLogRecordDetailed(platform, rcKey);
+  let rec = accountDetailRec;
   if (!rec || String(rec.id ?? "").trim() !== rcKey) {
     rec = await findAccountCallLogRecordByIdInWindow(platform, rcKey, windowStart, windowEnd);
   }
@@ -828,7 +915,13 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
   }
 
   const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, rcKey);
-  const fromAccountDetail = await recordingRefsFromAccountCallLogDetail(platform, rcKey);
+  const accountRecForRefs =
+    accountDetailRec && String(accountDetailRec.id ?? "").trim() === rcKey
+      ? accountDetailRec
+      : rec && String(rec.id ?? "").trim() === rcKey
+        ? rec
+        : await tryFetchCallLogRecordDetailed(platform, rcKey);
+  const fromAccountDetail = extractAllRecordingsFromRcRecord((accountRecForRefs ?? {}) as RcCallRecord);
   const extras = mergeRecordingRefsInOrder(
     fromAccountDetail,
     extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId),
@@ -912,7 +1005,8 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
     );
     const cid = String(primary.id ?? "").trim();
     const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, cid);
-    const fromAccountDetail = cid ? await recordingRefsFromAccountCallLogDetail(platform, cid) : [];
+    const accountPrimaryDetail = cid ? await tryFetchCallLogRecordDetailed(platform, cid) : null;
+    const fromAccountDetail = accountPrimaryDetail ? extractAllRecordingsFromRcRecord(accountPrimaryDetail) : [];
     const imported = toImportedCall(
       primary,
       mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
