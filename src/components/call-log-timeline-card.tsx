@@ -28,6 +28,7 @@ import {
   writeBookingFromCallToSession,
 } from "@/lib/booking-from-call";
 import type { TelephonyGeminiInsights } from "@/lib/telephony-gemini-insights";
+import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
 
 const CALLBACK_NEEDED_OUTCOME_CODE = "CALLBACK_NEEDED";
 import {
@@ -732,6 +733,10 @@ export function CallLogTimelineCard({
     return resultOptions.filter((o) => o.active !== false || o.code === snapshot.outcomeCode);
   }, [resultOptions, snapshot.outcomeCode]);
 
+  const summaryTrimmed = snapshot.summary?.trim() ?? "";
+  const summaryForDisplay =
+    summaryTrimmed === TELEPHONY_CALL_SUMMARY_PLACEHOLDER ? "" : summaryTrimmed;
+
   const hasFollowUp = Boolean(snapshot.followUpAtIso);
   const statusHex = resolveCallResultDisplayHex(
     snapshot.outcomeAccentHex,
@@ -935,12 +940,15 @@ export function CallLogTimelineCard({
               background: `linear-gradient(180deg, color-mix(in srgb, ${statusHex} 5%, #ffffff) 0%, #ffffff 60%)`,
             }}
           >
-            <p className="text-base font-medium leading-relaxed text-slate-900">{snapshot.summary}</p>
+            {summaryForDisplay ? (
+              <p className="text-base font-medium leading-relaxed text-slate-900">{summaryForDisplay}</p>
+            ) : null}
 
             {snapshot.telephonyDraft ? (
-              <p className="mt-2 text-xs text-slate-500">
-                Imported from RingCentral. Staff summary above is a placeholder — merge in AI notes below or replace when
-                you finish the log.
+              <p className={`text-xs text-slate-500 ${summaryForDisplay ? "mt-2" : ""}`}>
+                {summaryForDisplay
+                  ? "Imported from RingCentral. Staff summary above is a placeholder — merge in AI notes below or replace when you finish the log."
+                  : "Imported from RingCentral. Add a staff summary or AI notes below when you finish this log."}
               </p>
             ) : null}
 

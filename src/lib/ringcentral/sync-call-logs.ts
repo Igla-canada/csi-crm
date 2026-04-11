@@ -268,13 +268,33 @@ function touchRingCentralSyncRequestEnd(): void {
 }
 
 /**
+ * `@ringcentral/sdk` throws on non-2xx instead of returning `Response`.
+ * Unwrap so callers can treat 404/403 like `!resp.ok` (e.g. extension call-log id ≠ account id).
+ */
+function ringCentralSdkErrorResponse(e: unknown): Response | null {
+  if (!e || typeof e !== "object") return null;
+  const r = (e as { response?: unknown }).response;
+  if (r && typeof r === "object" && "status" in r && typeof (r as Response).status === "number") {
+    return r as Response;
+  }
+  return null;
+}
+
+/**
  * Throttled GET for call-log sync. Retries with backoff on HTTP 429 (per-minute / burst limits).
  */
 async function rcSyncGet(platform: RcPlatform, url: string, query?: unknown): Promise<Response> {
   const maxAttempts = 5;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await paceRingCentralSyncRequest();
-    const resp = query !== undefined ? await platform.get(url, query) : await platform.get(url);
+    let resp: Response;
+    try {
+      resp = query !== undefined ? await platform.get(url, query) : await platform.get(url);
+    } catch (e) {
+      const r = ringCentralSdkErrorResponse(e);
+      if (!r) throw e;
+      resp = r;
+    }
     touchRingCentralSyncRequestEnd();
 
     if (resp.status !== 429 || attempt === maxAttempts - 1) {

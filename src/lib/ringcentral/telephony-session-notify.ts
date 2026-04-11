@@ -30,10 +30,38 @@ type RcParty = {
 type SessionPayload = {
   sessionId: string;
   parties: RcParty[];
+  /**
+   * Call start time from webhook body/parties when RingCentral sends it.
+   * Avoids using hangup time (`new Date()`) as `happenedAt` on the placeholder row.
+   */
+  webhookStubHappenedAt?: Date | null;
 };
 
 function digitsOnly(s: string): string {
   return s.replace(/\D/g, "");
+}
+
+function parseOptionalIsoDate(v: unknown): Date | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Prefer session-level times, then earliest party `startTime` (call start, not hangup). */
+function webhookStubHappenedAtFromBody(body: Record<string, unknown>, parties: RcParty[]): Date | null {
+  for (const k of ["creationTime", "sessionStartTime", "startTime", "originalStartTime"] as const) {
+    const d = parseOptionalIsoDate(body[k]);
+    if (d) return d;
+  }
+  let earliest: Date | null = null;
+  for (const p of parties) {
+    const raw = p as Record<string, unknown>;
+    const d = parseOptionalIsoDate(raw.startTime ?? raw.sessionStartTime ?? raw.creationTime);
+    if (d && (!earliest || d.getTime() < earliest.getTime())) earliest = d;
+  }
+  return earliest;
 }
 
 function formatPhoneDisplay(digits: string, callLog10: string | null): string {
@@ -140,14 +168,23 @@ function extractSessionPayloads(envelope: unknown): SessionPayload[] {
       const s = seq as Record<string, unknown>;
       const sid = String(s.sessionId ?? s.telephonySessionId ?? b.sessionId ?? b.telephonySessionId ?? "").trim();
       const parties = pickParties(s.parties ?? b.parties);
-      if (sid && parties.length) out.push({ sessionId: sid, parties });
+      if (sid && parties.length) {
+        const merged = { ...b, ...s } as Record<string, unknown>;
+        out.push({
+          sessionId: sid,
+          parties,
+          webhookStubHappenedAt: webhookStubHappenedAtFromBody(merged, parties),
+        });
+      }
     }
     if (out.length) return out;
   }
 
   const sid = String(b.sessionId ?? b.telephonySessionId ?? b.id ?? "").trim();
   const parties = pickParties(b.parties);
-  if (sid && parties.length) return [{ sessionId: sid, parties }];
+  if (sid && parties.length) {
+    return [{ sessionId: sid, parties, webhookStubHappenedAt: webhookStubHappenedAtFromBody(b, parties) }];
+  }
   return [];
 }
 
@@ -176,7 +213,7 @@ function payloadsWithEventSessionFallback(envelope: unknown, extracted: SessionP
   if (process.env.NODE_ENV === "development") {
     console.info("[telephony-webhook] Using session id from `event` field (body had no sessionId).");
   }
-  return [{ sessionId: eventSid, parties }];
+  return [{ sessionId: eventSid, parties, webhookStubHappenedAt: webhookStubHappenedAtFromBody(b, parties) }];
 }
 
 function pickDisplayParty(parties: RcParty[]): RcParty | null {
@@ -265,7 +302,7 @@ export async function applyRingCentralTelephonyWebhookBody(
         phoneNormalized: cust?.digits ?? "",
         contactPhone10: cust?.callLog10 ?? null,
         contactName: sanitizeTelephonyContactName(cust?.name ?? null),
-        happenedAt: new Date(),
+        happenedAt: payload.webhookStubHappenedAt ?? new Date(),
         ...disp,
       };
       try {
