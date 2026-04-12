@@ -7,6 +7,7 @@ export type InboundCallHistoryRowDto = {
   contactName: string | null;
   happenedAt: string;
   telephonyDraft: boolean;
+  /** Staff-edited `CallLog.summary` (not AI). */
   summary: string;
   openedFromCallHistoryAt: string | null;
   ringCentralCallLogId: string | null;
@@ -17,7 +18,7 @@ export type InboundCallHistoryRowDto = {
   durationSeconds: number | null;
   /** Number of distinct recording files on the log. */
   recordingCount: number;
-  /** Summary column text: AI call-summary paragraph when present, else staff `summary`. */
+  /** Table preview: `telephonyAiSummary` when present, else staff `summary`. */
   displaySummary: string;
   /** True when a transcript or AI summary exists (hides the Transcript button). */
   hasTranscription: boolean;

@@ -6,6 +6,7 @@ import { endOfDay, format, parseISO, startOfDay, subDays } from "date-fns";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -13,6 +14,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CallHistoryOpenLogButton } from "@/components/call-history-open-log-button";
@@ -42,64 +44,114 @@ function InboundHistorySummaryHoverTip({
   children: ReactNode;
 }) {
   const [visible, setVisible] = useState(false);
-  const [style, setStyle] = useState<CSSProperties>({});
+  const [mounted, setMounted] = useState(false);
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [tipStyle, setTipStyle] = useState<CSSProperties>({
+    position: "fixed",
+    left: 0,
+    top: 0,
+    visibility: "hidden",
+    zIndex: 9999,
+    width: "min(26rem, calc(100vw - 1.5rem))",
+    minWidth: "17rem",
+    maxWidth: "min(26rem, calc(100vw - 1.5rem))",
+    boxSizing: "border-box",
+  });
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    };
+  }, []);
+
+  const cancelHideSoon = useCallback(() => {
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current);
+      leaveTimerRef.current = null;
+    }
+  }, []);
+
+  const hide = useCallback(() => {
+    cancelHideSoon();
+    setVisible(false);
+    setTipStyle((prev) => ({ ...prev, visibility: "hidden" }));
+  }, [cancelHideSoon]);
+
+  const hideSoon = useCallback(() => {
+    cancelHideSoon();
+    leaveTimerRef.current = setTimeout(() => {
+      leaveTimerRef.current = null;
+      hide();
+    }, 200);
+  }, [cancelHideSoon, hide]);
+
+  useLayoutEffect(() => {
+    if (!visible || !mounted || !tipRef.current || !triggerRef.current) return;
+    const el = tipRef.current;
+    const tr = triggerRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 10;
+    const gap = 8;
+    let left = tr.left;
+    let top = tr.bottom + gap;
+    const rect = el.getBoundingClientRect();
+    if (left + rect.width > vw - margin) {
+      left = Math.max(margin, vw - margin - rect.width);
+    }
+    if (left < margin) left = margin;
+    if (top + rect.height > vh - margin) {
+      top = Math.max(margin, tr.top - gap - rect.height);
+    }
+    if (top < margin) top = margin;
+    setTipStyle((prev) => ({
+      ...prev,
+      left,
+      top,
+      visibility: "visible",
+    }));
+  }, [visible, mounted, fullText]);
 
   if (!fullText || fullText === "—") {
     return <>{children}</>;
   }
 
-  const updatePosition = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    const margin = 8;
-    const gap = 6;
-    const spaceAbove = r.top;
-    const above = spaceAbove > 96;
-    const maxW = Math.min(384, typeof window !== "undefined" ? window.innerWidth - margin * 2 : 384);
-    let left = r.left;
-    if (typeof window !== "undefined") {
-      left = Math.max(margin, Math.min(left, window.innerWidth - margin - maxW));
-    }
-    if (above) {
-      setStyle({
-        position: "fixed",
-        left,
-        top: r.top - gap,
-        transform: "translateY(-100%)",
-        maxWidth: maxW,
-        zIndex: 300,
-      });
-    } else {
-      setStyle({
-        position: "fixed",
-        left,
-        top: r.bottom + gap,
-        maxWidth: maxW,
-        zIndex: 300,
-      });
-    }
-  };
+  const tip = (
+    <div
+      ref={tipRef}
+      role="tooltip"
+      className="rounded-xl border border-slate-200/90 bg-white px-4 py-3.5 text-left shadow-[0_10px_40px_-12px_rgba(15,23,42,0.22)] ring-1 ring-slate-900/[0.06] antialiased max-h-[min(22rem,72vh)] overflow-y-auto overscroll-contain"
+      style={tipStyle}
+      onMouseEnter={cancelHideSoon}
+      onMouseLeave={hideSoon}
+    >
+      <p className="text-pretty text-[13px] font-normal leading-[1.65] tracking-[-0.01em] text-slate-800 [overflow-wrap:anywhere] whitespace-pre-wrap break-words">
+        {fullText}
+      </p>
+    </div>
+  );
 
   return (
     <>
       <span
+        ref={triggerRef}
         className="inline-block max-w-full cursor-help"
-        onMouseEnter={(e) => {
-          updatePosition(e.currentTarget);
+        onMouseEnter={() => {
+          cancelHideSoon();
+          setTipStyle((prev) => ({ ...prev, visibility: "hidden" }));
           setVisible(true);
         }}
-        onMouseLeave={() => setVisible(false)}
+        onMouseLeave={hideSoon}
       >
         {children}
       </span>
-      {visible ? (
-        <span
-          role="tooltip"
-          className="pointer-events-none rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-left text-xs leading-relaxed text-slate-900 shadow-md"
-          style={style}
-        >
-          {fullText}
-        </span>
-      ) : null}
+      {mounted && visible ? createPortal(tip, document.body) : null}
     </>
   );
 }
@@ -123,16 +175,26 @@ function InboundHistorySummaryCell({
     !row.geminiTranscribePending &&
     !row.rcAiTranscribePending;
 
-  const rawSummary = row.displaySummary?.trim() ?? "";
-  const effectiveSummary = rawSummary === TELEPHONY_CALL_SUMMARY_PLACEHOLDER ? "" : rawSummary;
-  const showSummaryText = Boolean(effectiveSummary);
+  const rawDisplay = row.displaySummary?.trim() ?? "";
+  const effectiveDisplay = rawDisplay === TELEPHONY_CALL_SUMMARY_PLACEHOLDER ? "" : rawDisplay;
+
+  const rawStaff = row.summary?.trim() ?? "";
+  const effectiveStaff = rawStaff === TELEPHONY_CALL_SUMMARY_PLACEHOLDER ? "" : rawStaff;
+
+  const showSummaryText = Boolean(effectiveDisplay);
+  /** Hover shows staff-written summary only (not AI narrative / telephonyAiSummary). */
+  const hoverFullText = effectiveStaff;
 
   return (
     <div className="space-y-1.5">
       {showSummaryText ? (
-        <InboundHistorySummaryHoverTip fullText={effectiveSummary}>
-          <span className="line-clamp-3 text-sm leading-snug">{effectiveSummary}</span>
-        </InboundHistorySummaryHoverTip>
+        hoverFullText ? (
+          <InboundHistorySummaryHoverTip fullText={hoverFullText}>
+            <span className="line-clamp-3 text-sm leading-snug">{effectiveDisplay}</span>
+          </InboundHistorySummaryHoverTip>
+        ) : (
+          <span className="line-clamp-3 text-sm leading-snug">{effectiveDisplay}</span>
+        )
       ) : null}
       {row.geminiTranscribePending ? (
         <p className="text-[11px] font-medium text-slate-500">Transcribing…</p>
