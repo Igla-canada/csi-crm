@@ -182,19 +182,18 @@ function InboundHistorySummaryCell({
   const effectiveStaff = rawStaff === TELEPHONY_CALL_SUMMARY_PLACEHOLDER ? "" : rawStaff;
 
   const showSummaryText = Boolean(effectiveDisplay);
-  /** Hover shows staff-written summary only (not AI narrative / telephonyAiSummary). */
-  const hoverFullText = effectiveStaff;
+  /**
+   * Full text for hover: prefer staff-written summary when present, else the same text shown in the cell
+   * (usually AI call insights). Rows with only AI used to skip the hover wrapper when staff was still the RC placeholder.
+   */
+  const hoverFullText = effectiveStaff || effectiveDisplay;
 
   return (
     <div className="space-y-1.5">
       {showSummaryText ? (
-        hoverFullText ? (
-          <InboundHistorySummaryHoverTip fullText={hoverFullText}>
-            <span className="line-clamp-3 text-sm leading-snug">{effectiveDisplay}</span>
-          </InboundHistorySummaryHoverTip>
-        ) : (
+        <InboundHistorySummaryHoverTip fullText={hoverFullText}>
           <span className="line-clamp-3 text-sm leading-snug">{effectiveDisplay}</span>
-        )
+        </InboundHistorySummaryHoverTip>
       ) : null}
       {row.geminiTranscribePending ? (
         <p className="text-[11px] font-medium text-slate-500">Transcribing…</p>
