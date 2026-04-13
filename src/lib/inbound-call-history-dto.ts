@@ -1,6 +1,8 @@
 /** Serializable row for `GET /api/calls/inbound-history` and the client table. */
 export type InboundCallHistoryRowDto = {
   id: string;
+  /** Whether this log is an inbound or outbound call. */
+  direction: "INBOUND" | "OUTBOUND";
   clientId: string;
   clientDisplayName: string;
   contactPhone: string | null;

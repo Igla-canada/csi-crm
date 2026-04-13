@@ -2272,6 +2272,7 @@ export type InboundCallHistoryRow = {
   geminiTranscribePending: boolean;
   /** RingCentral async speech job queued (webhook pending). */
   rcAiTranscribePending: boolean;
+  direction: CallDirection;
 };
 
 const INBOUND_CALL_HISTORY_LIMIT = 200;
@@ -2379,7 +2380,7 @@ function inboundHistoryRecordingCountFromRow(row: Record<string, unknown>): numb
 }
 
 const INBOUND_HISTORY_LIST_SELECT_CORE =
-  "id,clientId,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingContentUri";
+  "id,clientId,direction,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingContentUri";
 
 const INBOUND_HISTORY_LIST_GEMINI_FIELDS =
   ",telephonyTranscript,telephonyAiSummary,telephonyGeminiPending,telephonyAiJobId";
@@ -2398,7 +2399,7 @@ export async function listInboundCallHistory(
     range != null ? INBOUND_CALL_HISTORY_LIMIT_FILTERED : INBOUND_CALL_HISTORY_LIMIT;
 
   const build = (select: string) => {
-    let q = sb().from(tables.CallLog).select(select).eq("direction", "INBOUND");
+    let q = sb().from(tables.CallLog).select(select).in("direction", ["INBOUND", "OUTBOUND"]);
     if (range?.gte) q = q.gte("happenedAt", range.gte);
     if (range?.lte) q = q.lte("happenedAt", range.lte);
     return q
@@ -2437,6 +2438,9 @@ export async function listInboundCallHistory(
     ).trim();
     const staffSummary = String(r.summary ?? "");
     const hasTranscription = Boolean(transcript || aiSummary);
+    const dirRaw = String(r.direction ?? "INBOUND").toUpperCase();
+    const direction =
+      dirRaw === "OUTBOUND" ? CallDirection.OUTBOUND : CallDirection.INBOUND;
     return {
       id: String(r.id ?? ""),
       clientId: String(r.clientId ?? ""),
@@ -2462,6 +2466,7 @@ export async function listInboundCallHistory(
       hasTranscription,
       geminiTranscribePending: Boolean(r.telephonyGeminiPending),
       rcAiTranscribePending: Boolean(String((r.telephonyAiJobId as string | null) ?? "").trim()),
+      direction,
     };
   });
 }

@@ -45,6 +45,7 @@ export async function GET(req: NextRequest) {
     const rows = await listInboundCallHistory(filter);
     const payload: InboundCallHistoryRowDto[] = rows.map((r) => ({
       id: r.id,
+      direction: r.direction,
       clientId: r.clientId,
       clientDisplayName: r.clientDisplayName,
       contactPhone: r.contactPhone,

@@ -26,9 +26,47 @@ import {
   isInboundHistoryOpenLogSuppressedByLiveDock,
   navigateOpenLiveCallLogFromDock,
 } from "@/lib/live-dock-open-log-client";
+import { telephonyResultLooksMissedOrUnanswered } from "@/lib/inbound-call-history-disposition";
 import { formatInboundCallHistoryDuration } from "@/lib/inbound-call-history-format";
 import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
-import { Pause, Play } from "lucide-react";
+import { Pause, PhoneIncoming, PhoneMissed, PhoneOutgoing, Play } from "lucide-react";
+
+function InboundCallTypeIcon({
+  direction,
+  telephonyResult,
+}: {
+  direction: "INBOUND" | "OUTBOUND";
+  telephonyResult?: string | null;
+}) {
+  const missed = telephonyResultLooksMissedOrUnanswered(telephonyResult ?? null);
+  if (missed) {
+    const label = "Missed / voicemail / no answer";
+    return (
+      <span className="inline-flex items-center justify-center text-slate-600" title={label}>
+        <span className="sr-only">{label}</span>
+        <PhoneMissed
+          className="h-[1.125rem] w-[1.125rem] text-rose-600"
+          aria-hidden
+          strokeWidth={2.25}
+        />
+      </span>
+    );
+  }
+
+  const out = direction === "OUTBOUND";
+  const Icon = out ? PhoneOutgoing : PhoneIncoming;
+  const label = out ? "Outgoing call" : "Incoming call";
+  return (
+    <span className="inline-flex items-center justify-center text-slate-600" title={label}>
+      <span className="sr-only">{label}</span>
+      <Icon
+        className={out ? "h-[1.125rem] w-[1.125rem] text-amber-700" : "h-[1.125rem] w-[1.125rem] text-emerald-700"}
+        aria-hidden
+        strokeWidth={2.25}
+      />
+    </span>
+  );
+}
 
 function formatWhenInShopTz(iso: string, timeZone: string) {
   const d = parseISO(iso);
@@ -639,7 +677,7 @@ export function InboundCallHistoryTable({
         <p className="text-sm text-slate-600">
           <span className="font-semibold tabular-nums text-slate-800">{shownCount}</span> {countNoun} shown
           <span className="text-slate-400"> · </span>
-          {dateFilterActive ? "No inbound calls in this range." : "No inbound calls on file yet."}
+          {dateFilterActive ? "No calls in this range." : "No calls on file yet."}
         </p>
       </div>
     );
@@ -663,9 +701,12 @@ export function InboundCallHistoryTable({
         <span className="font-semibold tabular-nums text-slate-800">{shownCount}</span> {countNoun} shown
       </p>
       <div className="overflow-x-auto">
-      <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[940px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <th className="w-10 py-3 pr-2 text-center" scope="col">
+              <span className="sr-only">Call type</span>
+            </th>
             <th className="py-3 pr-4">When</th>
             <th className="py-3 pr-3">Result</th>
             <th className="py-3 pr-3">Length</th>
@@ -686,6 +727,9 @@ export function InboundCallHistoryTable({
                   key={`dock-live:${dock.key}`}
                   className="border-b border-slate-100 bg-emerald-50/40 last:border-0"
                 >
+                  <td className="py-3 pr-2 align-top text-center text-slate-700">
+                    <InboundCallTypeIcon direction="INBOUND" telephonyResult={null} />
+                  </td>
                   <td className="py-3 pr-4 align-top text-slate-700">
                     <span className="font-medium text-emerald-800">Live now</span>
                   </td>
@@ -720,6 +764,9 @@ export function InboundCallHistoryTable({
 
             return (
               <tr key={row.id} className="border-b border-slate-100 last:border-0">
+                <td className="py-3 pr-2 align-top text-center text-slate-700">
+                  <InboundCallTypeIcon direction={row.direction} telephonyResult={row.telephonyResult} />
+                </td>
                 <td className="py-3 pr-4 align-top text-slate-700">
                   {formatWhenInShopTz(row.happenedAt, dateFilterTimezone)}
                 </td>
