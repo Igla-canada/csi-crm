@@ -84,13 +84,65 @@ function pushRecordingFieldsOnLeg(leg: RcLeg, push: (raw: RcRecording | undefine
   }
 }
 
+/** Some carriers return a single leg object instead of a one-element `legs` array. */
+function normalizeLegsArray(raw: RcLeg[] | RcLeg | undefined | null): RcLeg[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "object") return [raw as RcLeg];
+  return [];
+}
+
+/**
+ * TELUS / RC variants sometimes nest `recording` under uncommon keys. Avoid treating arbitrary `{ id }` as a recording:
+ * require a URI, a `/recording/` path, or a recording-like `type` with an id.
+ */
+function isLikelyRingCentralRecordingPayload(o: Record<string, unknown>): boolean {
+  const contentUri = String(o.contentUri ?? "").trim();
+  if (contentUri) return true;
+  const uri = String(o.uri ?? "").trim();
+  if (uri && /\/recording\//i.test(uri)) return true;
+  const id = String(o.id ?? "").trim();
+  if (!id) return false;
+  const ty = String(o.type ?? "").trim();
+  if (/^(automatic|on[- ]?demand|audio)/i.test(ty)) return true;
+  return false;
+}
+
+const DEEP_SCAN_RECORDING_MAX_NODES = 220;
+
+/** Breadth-first scan for recording objects missed by typed `legs` walking (carrier-specific shapes). */
+function deepScanRecordingPayloads(root: unknown, push: (raw: RcRecording | undefined | null) => void): void {
+  const queue: unknown[] = [root];
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  while (queue.length > 0 && nodes < DEEP_SCAN_RECORDING_MAX_NODES) {
+    const cur = queue.shift();
+    nodes += 1;
+    if (cur == null || typeof cur !== "object") continue;
+    if (seen.has(cur as object)) continue;
+    seen.add(cur as object);
+    if (Array.isArray(cur)) {
+      for (const x of cur) queue.push(x);
+      continue;
+    }
+    const o = cur as Record<string, unknown>;
+    if (isLikelyRingCentralRecordingPayload(o)) {
+      push(o as RcRecording);
+      continue;
+    }
+    for (const v of Object.values(o)) {
+      if (v && typeof v === "object") queue.push(v);
+    }
+  }
+}
+
 /** Walk nested `legs` (FindMe / transfer trees in Detailed call-log). */
-function walkLegsForRecordings(legs: RcLeg[] | undefined, push: (raw: RcRecording | undefined | null) => void): void {
-  if (!Array.isArray(legs)) return;
-  for (const leg of legs) {
+function walkLegsForRecordings(legs: RcLeg[] | RcLeg | undefined, push: (raw: RcRecording | undefined | null) => void): void {
+  const list = normalizeLegsArray(legs);
+  for (const leg of list) {
     if (!leg || typeof leg !== "object") continue;
     pushRecordingFieldsOnLeg(leg, push);
-    if (Array.isArray(leg.legs)) walkLegsForRecordings(leg.legs, push);
+    walkLegsForRecordings(leg.legs, push);
   }
 }
 
@@ -110,6 +162,7 @@ function extractAllRecordingsFromRcRecord(rec: RcCallRecord): RecordingRef[] {
     for (const r of topList) push(r);
   }
   walkLegsForRecordings(rec.legs, push);
+  deepScanRecordingPayloads(rec, push);
   return out;
 }
 
@@ -171,16 +224,14 @@ function pickCustomerPhoneForImport(
     const hit = tryPartyPhone(p);
     if (hit) return hit;
   }
-  const legs = r.legs;
-  if (Array.isArray(legs)) {
-    for (const leg of legs) {
-      if (!leg || typeof leg !== "object") continue;
-      const L = leg as RcLeg;
-      const order = inbound ? [L.from, L.to] : [L.to, L.from];
-      for (const p of order) {
-        const hit = tryPartyPhone(p);
-        if (hit) return hit;
-      }
+  const legs = normalizeLegsArray(r.legs);
+  for (const leg of legs) {
+    if (!leg || typeof leg !== "object") continue;
+    const L = leg as RcLeg;
+    const order = inbound ? [L.from, L.to] : [L.to, L.from];
+    for (const p of order) {
+      const hit = tryPartyPhone(p);
+      if (hit) return hit;
     }
   }
   let nameHint: string | null = null;
@@ -360,8 +411,10 @@ async function loadExtensionRecordingMaps(
       if (!all.length) continue;
       const cid = String(rec.id ?? "").trim();
       const sid = String(rec.sessionId ?? "").trim();
+      const tsid = String(rec.telephonySessionId ?? "").trim();
       if (cid) mergeRecordingMapEntry(byCallLogId, cid, all);
       if (sid) mergeRecordingMapEntry(bySessionId, sid, all);
+      if (tsid) mergeRecordingMapEntry(bySessionId, tsid, all);
     }
     const totalPages = body.paging?.totalPages;
     const lastPage =
@@ -382,9 +435,11 @@ function extensionRecordingExtrasForCall(
 ): RecordingRef[] {
   const cid = String(rec.id ?? "").trim();
   const sid = String(rec.sessionId ?? "").trim();
+  const tsid = String(rec.telephonySessionId ?? "").trim();
   return mergeRecordingRefsInOrder(
     cid ? byCallLogId.get(cid) : undefined,
     sid ? bySessionId.get(sid) : undefined,
+    tsid ? bySessionId.get(tsid) : undefined,
   );
 }
 
@@ -475,6 +530,8 @@ export async function syncRingCentralVoiceCallLogsFromApi(
 
   const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, dateFrom, dateTo, result.errors);
 
+  const sessionRowCache = new Map<string, RcCallRecord[]>();
+
   let page = 1;
   const perPage = 250;
 
@@ -531,12 +588,32 @@ export async function syncRingCentralVoiceCallLogsFromApi(
 
     for (const w of rowWorks) {
       let extra = w.extra;
+      let detailRow: RcCallRecord | null = null;
       if (w.needAccountDetail && w.cid) {
-        const detail = detailById.get(w.cid);
-        const refs = detail
-          ? extractAllRecordingsFromRcRecord(detail)
+        detailRow = detailById.get(w.cid) ?? null;
+        const refs = detailRow
+          ? extractAllRecordingsFromRcRecord(detailRow)
           : await recordingRefsFromAccountCallLogDetail(platform, w.cid);
         extra = mergeRecordingRefsInOrder(refs, extra);
+      }
+      const mergedSoFar = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra);
+      if (mergedSoFar.length === 0 && w.cid) {
+        const hints = [
+          ...collectSessionHintsFromRcRecords(w.rec, detailRow),
+        ];
+        for (const h of hints) {
+          const group = await loadAccountRowsForSessionHintCached(
+            platform,
+            h,
+            dateFrom,
+            dateTo,
+            RC_BULK_SESSION_LOOKUP_MAX_PAGES,
+            sessionRowCache,
+          );
+          const sib = group.filter((r) => String(r.id ?? "").trim() !== w.cid);
+          extra = mergeRecordingRefsInOrder(extra, ...sib.map((r) => extractAllRecordingsFromRcRecord(r)));
+          if (mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length > 0) break;
+        }
       }
       const imported = toImportedCall(w.rec, extra);
       if (!imported) {
@@ -686,6 +763,88 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
     return ta - tb;
   });
 }
+
+/** Numeric `sessionId` and `telephonySessionId` (`s-…`) can both appear; union lookups so sibling rows are not missed. */
+function collectSessionHintsFromRcRecords(...parts: (RcCallRecord | null | undefined)[]): string[] {
+  const hints = new Set<string>();
+  for (const rec of parts) {
+    if (!rec) continue;
+    const a = String(rec.telephonySessionId ?? "").trim();
+    const b = String(rec.sessionId ?? "").trim();
+    if (a) hints.add(a);
+    if (b) hints.add(b);
+  }
+  return [...hints];
+}
+
+function collectSessionHintsFromStoredMetadata(meta: unknown): string[] {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return [];
+  const o = meta as Record<string, unknown>;
+  const hints = new Set<string>();
+  for (const key of ["telephonySessionId", "sessionId"] as const) {
+    const s = String(o[key] ?? "").trim();
+    if (s) hints.add(s);
+  }
+  return [...hints];
+}
+
+async function loadSiblingRcRecordsForSessionHints(
+  platform: RcPlatform,
+  hints: string[],
+  dateFrom: Date,
+  dateTo: Date,
+  excludeCallLogId: string,
+  maxPages: number,
+): Promise<RcCallRecord[]> {
+  const exclude = excludeCallLogId.trim();
+  const byId = new Map<string, RcCallRecord>();
+  for (const h of hints) {
+    const trimmed = h.trim();
+    if (!trimmed) continue;
+    const rows = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+      platform,
+      trimmed,
+      dateFrom,
+      dateTo,
+      undefined,
+      maxPages,
+    );
+    for (const r of rows) {
+      const rid = String(r.id ?? "").trim();
+      if (!rid || rid === exclude) continue;
+      byId.set(rid, r);
+    }
+  }
+  return [...byId.values()];
+}
+
+async function loadAccountRowsForSessionHintCached(
+  platform: RcPlatform,
+  hint: string,
+  dateFrom: Date,
+  dateTo: Date,
+  maxPages: number,
+  cache: Map<string, RcCallRecord[]>,
+): Promise<RcCallRecord[]> {
+  const k = hint.trim();
+  if (!k) return [];
+  let rows = cache.get(k);
+  if (!rows) {
+    rows = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+      platform,
+      k,
+      dateFrom,
+      dateTo,
+      undefined,
+      maxPages,
+    );
+    cache.set(k, rows);
+  }
+  return rows;
+}
+
+/** Full sync: cheaper session paging than webhook/single-call refresh (many rows share few sessions). */
+const RC_BULK_SESSION_LOOKUP_MAX_PAGES = 24;
 
 async function tryFetchCallLogRecordDetailed(platform: RcPlatform, callLogId: string): Promise<RcCallRecord | null> {
   const id = callLogId.trim();
@@ -841,7 +1000,7 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
   const sb = getSupabaseAdmin();
   const { data: callRow, error: rowErr } = await sb
     .from(tables.CallLog)
-    .select("id,ringCentralCallLogId,happenedAt")
+    .select("id,ringCentralCallLogId,happenedAt,telephonyMetadata")
     .eq("id", crmCallLogId)
     .maybeSingle();
   if (rowErr) {
@@ -948,27 +1107,29 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     fromDetail,
   );
 
-  const sessionHint = String(rec.telephonySessionId ?? rec.sessionId ?? "").trim();
-  let siblingRefs: RecordingRef[] = [];
-  if (sessionHint) {
-    const group = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
-      platform,
-      sessionHint,
-      windowStart,
-      windowEnd,
-      undefined,
-      TELEPHONY_END_IMPORT_MAX_PAGES,
-    );
-    const siblings = group.filter((r) => String(r.id ?? "").trim() !== rcKey);
-    siblingRefs = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
-  }
+  const storedMeta = (callRow as { telephonyMetadata?: unknown }).telephonyMetadata;
+  const sessionHints = [
+    ...new Set([
+      ...collectSessionHintsFromRcRecords(rec, accountRecForRefs),
+      ...collectSessionHintsFromStoredMetadata(storedMeta),
+    ]),
+  ];
+  const siblings = await loadSiblingRcRecordsForSessionHints(
+    platform,
+    sessionHints,
+    windowStart,
+    windowEnd,
+    rcKey,
+    TELEPHONY_END_IMPORT_MAX_PAGES,
+  );
+  const siblingRefs = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
 
   const imported = toImportedCall(rec, mergeRecordingRefsInOrder(siblingRefs, extras));
   if (!imported) {
     return { ok: false, error: "Could not build RingCentral import for this call." };
   }
   try {
-    await upsertCallLogFromRingCentralImport(imported, env.integrationUserId);
+    await applyRingCentralImportToExistingCallLogById(crmCallLogId, imported);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
