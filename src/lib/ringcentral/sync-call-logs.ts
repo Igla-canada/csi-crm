@@ -37,6 +37,8 @@ type RcLeg = {
   recording?: RcRecording;
   /** Some carriers expose multiple fragments on one leg (TELUS / forwarded flows). */
   recordings?: RcRecording[];
+  /** Leg-level direction (FindMe / transfer rows often differ from the parent call-log row). */
+  direction?: string;
   from?: RcParty;
   to?: RcParty;
   result?: string;
@@ -208,13 +210,84 @@ function tryPartyPhone(party: RcParty | undefined): { digits: string; callLog10:
   return { digits: lookup, callLog10, name: party?.name ?? null };
 }
 
+function forEachLegDepthFirst(legs: RcLeg[] | RcLeg | undefined, fn: (leg: RcLeg) => void): void {
+  for (const leg of normalizeLegsArray(legs)) {
+    fn(leg);
+    forEachLegDepthFirst(leg.legs, fn);
+  }
+}
+
+/**
+ * If the customer's number appears only as `from` across the record → they called us (inbound).
+ * Only as `to` → we dialed them (outbound). Both or neither → unknown (fall back to RC `direction`).
+ */
+function inferCustomerCallDirectionFromRecord(rec: RcCallRecord, customerDigits: string): CallDirection | null {
+  if (customerDigits.length < MIN_DIGITS_LOOKUP) return null;
+  let seenFrom = false;
+  let seenTo = false;
+  const touch = (p: RcParty | undefined, side: "from" | "to") => {
+    const hit = tryPartyPhone(p);
+    if (!hit || hit.digits !== customerDigits) return;
+    if (side === "from") seenFrom = true;
+    else seenTo = true;
+  };
+  touch(rec.from, "from");
+  touch(rec.to, "to");
+  forEachLegDepthFirst(rec.legs, (leg) => {
+    touch(leg.from, "from");
+    touch(leg.to, "to");
+  });
+  if (seenFrom && !seenTo) return CallDirection.INBOUND;
+  if (seenTo && !seenFrom) return CallDirection.OUTBOUND;
+  return null;
+}
+
+function resolveRingCentralCustomerDirection(
+  primary: RcCallRecord,
+  customerDigits: string,
+  contextRecords: RcCallRecord[] | undefined,
+): CallDirection | null {
+  const direct = inferCustomerCallDirectionFromRecord(primary, customerDigits);
+  if (direct) return direct;
+  for (const r of contextRecords ?? []) {
+    const d = inferCustomerCallDirectionFromRecord(r, customerDigits);
+    if (d) return d;
+  }
+  return null;
+}
+
+function dedupeRcRecordsById(records: RcCallRecord[]): RcCallRecord[] {
+  const m = new Map<string, RcCallRecord>();
+  for (const r of records) {
+    const id = String(r.id ?? "").trim();
+    if (id) m.set(id, r);
+  }
+  return [...m.values()];
+}
+
 /**
  * Resolves external party phone for CRM matching. Falls back to leg-level from/to (transfers, FindMe, park)
  * and finally imports with no dialable digits so rows still sync (Telus-style multi-leg logs often omit top-level `from`).
+ *
+ * Prefer the caller on any **Inbound** segment first (matches live telephony webhook behavior). Internal outbound
+ * legs (FindMe, park) often lack the customer on `from`/`to` order that top-level `direction=Outbound` implies.
  */
 function pickCustomerPhoneForImport(
   r: RcCallRecord,
 ): { digits: string; callLog10: string | null; name: string | null } {
+  if (String(r.direction ?? "").toLowerCase().includes("inbound")) {
+    const hit = tryPartyPhone(r.from);
+    if (hit) return hit;
+  }
+  let inboundLegHit: { digits: string; callLog10: string | null; name: string | null } | null = null;
+  forEachLegDepthFirst(r.legs, (leg) => {
+    if (inboundLegHit) return;
+    if (!String(leg.direction ?? "").toLowerCase().includes("inbound")) return;
+    const hit = tryPartyPhone(leg.from);
+    if (hit) inboundLegHit = hit;
+  });
+  if (inboundLegHit) return inboundLegHit;
+
   const dir = String(r.direction ?? "").toLowerCase();
   const inbound = dir.includes("inbound");
   const partyOrder = (inbound ? [r.from, r.to] : [r.to, r.from]).filter(
@@ -224,16 +297,30 @@ function pickCustomerPhoneForImport(
     const hit = tryPartyPhone(p);
     if (hit) return hit;
   }
-  const legs = normalizeLegsArray(r.legs);
-  for (const leg of legs) {
-    if (!leg || typeof leg !== "object") continue;
-    const L = leg as RcLeg;
-    const order = inbound ? [L.from, L.to] : [L.to, L.from];
-    for (const p of order) {
-      const hit = tryPartyPhone(p);
-      if (hit) return hit;
+  {
+    const stack = [...normalizeLegsArray(r.legs)];
+    while (stack.length) {
+      const leg = stack.pop()!;
+      const order = inbound ? [leg.from, leg.to] : [leg.to, leg.from];
+      for (const p of order) {
+        const hit = tryPartyPhone(p);
+        if (hit) return hit;
+      }
+      stack.push(...normalizeLegsArray(leg.legs));
     }
   }
+  {
+    const stack = [...normalizeLegsArray(r.legs)];
+    while (stack.length) {
+      const leg = stack.pop()!;
+      for (const p of [leg.from, leg.to]) {
+        const hit = tryPartyPhone(p);
+        if (hit) return hit;
+      }
+      stack.push(...normalizeLegsArray(leg.legs));
+    }
+  }
+
   let nameHint: string | null = null;
   for (const p of partyOrder) {
     const n = p?.name?.trim();
@@ -259,17 +346,21 @@ function isExcludedNonVoiceCallType(typeLower: string): boolean {
   );
 }
 
-function toImportedCall(rec: RcCallRecord, extraRecordings?: RecordingRef[]): RingCentralImportedCall | null {
+function toImportedCall(
+  rec: RcCallRecord,
+  extraRecordings?: RecordingRef[],
+  opts?: { directionContextRecords?: RcCallRecord[] },
+): RingCentralImportedCall | null {
   const id = String(rec.id ?? "").trim();
   if (!id) return null;
   const type = String(rec.type ?? "").toLowerCase();
   if (isExcludedNonVoiceCallType(type)) return null;
   /* List requests already use `type=Voice`; do not drop rows on unknown `type` strings (TELUS / RC variants). */
 
-  const direction = mapDirection(rec.direction);
-  if (!direction) return null;
-
   const phone = pickCustomerPhoneForImport(rec);
+  const inferredDir = resolveRingCentralCustomerDirection(rec, phone.digits, opts?.directionContextRecords);
+  const direction = inferredDir ?? mapDirection(rec.direction);
+  if (!direction) return null;
 
   const start = rec.startTime ? new Date(rec.startTime) : null;
   if (!start || Number.isNaN(start.getTime())) return null;
@@ -560,14 +651,14 @@ export async function syncRingCentralVoiceCallLogsFromApi(
       extra: RecordingRef[];
       cid: string;
       needAccountDetail: boolean;
+      sessionMates: RcCallRecord[];
     };
     const rowWorks: RowWork[] = [];
 
     for (const rec of records) {
+      const sessionMates = records.filter((r) => r !== rec && sameTelephonySession(rec, r));
       const fromSiblingsOnPage = mergeRecordingRefsInOrder(
-        ...records
-          .filter((r) => r !== rec && sameTelephonySession(rec, r))
-          .map((r) => extractAllRecordingsFromRcRecord(r)),
+        ...sessionMates.map((r) => extractAllRecordingsFromRcRecord(r)),
       );
       const cid = String(rec.id ?? "").trim();
       let extra = mergeRecordingRefsInOrder(
@@ -580,6 +671,7 @@ export async function syncRingCentralVoiceCallLogsFromApi(
         extra,
         cid,
         needAccountDetail: !haveAnyRecording && Boolean(cid),
+        sessionMates,
       });
     }
 
@@ -589,6 +681,7 @@ export async function syncRingCentralVoiceCallLogsFromApi(
     for (const w of rowWorks) {
       let extra = w.extra;
       let detailRow: RcCallRecord | null = null;
+      const directionContext = [...w.sessionMates];
       if (w.needAccountDetail && w.cid) {
         detailRow = detailById.get(w.cid) ?? null;
         const refs = detailRow
@@ -612,10 +705,13 @@ export async function syncRingCentralVoiceCallLogsFromApi(
           );
           const sib = group.filter((r) => String(r.id ?? "").trim() !== w.cid);
           extra = mergeRecordingRefsInOrder(extra, ...sib.map((r) => extractAllRecordingsFromRcRecord(r)));
+          directionContext.push(...sib);
           if (mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length > 0) break;
         }
       }
-      const imported = toImportedCall(w.rec, extra);
+      const imported = toImportedCall(w.rec, extra, {
+        directionContextRecords: dedupeRcRecordsById(directionContext),
+      });
       if (!imported) {
         result.skipped += 1;
         continue;
@@ -1048,6 +1144,7 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     return toImportedCall(
       primary,
       mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
+      { directionContextRecords: siblings },
     );
   };
 
@@ -1124,7 +1221,9 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
   );
   const siblingRefs = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
 
-  const imported = toImportedCall(rec, mergeRecordingRefsInOrder(siblingRefs, extras));
+  const imported = toImportedCall(rec, mergeRecordingRefsInOrder(siblingRefs, extras), {
+    directionContextRecords: siblings,
+  });
   if (!imported) {
     return { ok: false, error: "Could not build RingCentral import for this call." };
   }
@@ -1155,20 +1254,13 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
   const dateTo = new Date();
   const dateFrom = subHours(dateTo, TELEPHONY_END_IMPORT_HOURS_BACK);
 
-  const directionFilter =
-    stub.direction === CallDirection.INBOUND
-      ? "Inbound"
-      : stub.direction === CallDirection.OUTBOUND
-        ? "Outbound"
-        : undefined;
-
-  /** Transfers can yield multiple company call-log rows with the same session id — collect all for recordings. */
+  /** Do not filter by direction: inbound sessions still emit outbound legs (FindMe, park) that carry recordings. */
   const matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
     platform,
     sessionId,
     dateFrom,
     dateTo,
-    directionFilter,
+    undefined,
     TELEPHONY_END_IMPORT_MAX_PAGES,
   );
 
@@ -1191,6 +1283,7 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
     const imported = toImportedCall(
       primary,
       mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
+      { directionContextRecords: siblings },
     );
     if (imported) {
       await deleteCallLogWebhookTelephonyPlaceholder(sessionId);

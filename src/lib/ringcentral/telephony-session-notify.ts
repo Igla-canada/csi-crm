@@ -221,6 +221,9 @@ function pickDisplayParty(parties: RcParty[]): RcParty | null {
   if (!active.length) return null;
   const inbound = active.find((p) => String(p.direction ?? "").toLowerCase().includes("inbound"));
   if (inbound) return inbound;
+  /** Outbound / internal legs first: prefer any party we can map to a customer phone (parity with inbound caller display). */
+  const withCustomer = active.find((p) => customerFromParty(p) != null);
+  if (withCustomer) return withCustomer;
   return active[0] ?? null;
 }
 
