@@ -424,10 +424,25 @@ function resolveCallLogSourceDisplay(raw: string | null, leadLabelByCode: Map<st
   return leadLabelByCode.get(raw) ?? raw;
 }
 
-function parseTelephonyRecordingRefsJson(raw: unknown): Array<{ id: string; contentUri: string }> | null {
-  if (!Array.isArray(raw)) return null;
+/** Supabase/Postgres may return `telephonyRecordingRefs` as a JSON string. */
+export function coerceTelephonyRecordingRefsArray(raw: unknown): unknown[] | null {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const v = JSON.parse(raw) as unknown;
+      return Array.isArray(v) ? v : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function parseTelephonyRecordingRefsJson(raw: unknown): Array<{ id: string; contentUri: string }> | null {
+  const arr = coerceTelephonyRecordingRefsArray(raw);
+  if (!arr) return null;
   const out: Array<{ id: string; contentUri: string }> = [];
-  for (const item of raw) {
+  for (const item of arr) {
     const path = recordingPathFromStoredRef(item);
     if (!path) continue;
     const o = item as Record<string, unknown>;
@@ -2248,21 +2263,16 @@ export async function findClientsByNormalizedPhone(normalizedDigits: string): Pr
   });
 }
 
-/** True when Call history should not offer “Open log” again (opened once, or RingCentral stub already completed). */
-export function isCallHistoryOpenLogDisabled(row: {
+/**
+ * Call history always offers “Open log” when the user can log calls (including reopen after the first open).
+ * Kept so API/DTO callers stay explicit; the implementation no longer disables the control.
+ */
+export function isCallHistoryOpenLogDisabled(_row: {
   openedFromCallHistoryAt: Date | string | null | undefined;
   telephonyDraft: boolean;
   summary: string;
   ringCentralCallLogId: string | null | undefined;
 }): boolean {
-  if (row.openedFromCallHistoryAt != null && String(row.openedFromCallHistoryAt).trim() !== "") {
-    return true;
-  }
-  const rc = Boolean(String(row.ringCentralCallLogId ?? "").trim());
-  if (rc) {
-    if (!row.telephonyDraft) return true;
-    return row.summary.trim() !== TELEPHONY_CALL_SUMMARY_PLACEHOLDER;
-  }
   return false;
 }
 
@@ -2513,16 +2523,6 @@ export async function markCallLogOpenedFromCallHistory(callLogId: string): Promi
   const clientId = row.clientId as string;
   if (row.openedFromCallHistoryAt) {
     return { clientId };
-  }
-  if (
-    isCallHistoryOpenLogDisabled({
-      openedFromCallHistoryAt: null,
-      telephonyDraft: Boolean(row.telephonyDraft),
-      summary: String(row.summary ?? ""),
-      ringCentralCallLogId: (row.ringCentralCallLogId as string | null) ?? null,
-    })
-  ) {
-    throw new UserInputError("This call can’t be opened from call history anymore.");
   }
   const nowIso = new Date().toISOString();
   const { error: upErr } = await sb()

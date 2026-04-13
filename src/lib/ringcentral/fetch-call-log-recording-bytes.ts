@@ -1,5 +1,6 @@
 import "server-only";
 
+import { parseTelephonyRecordingRefsJson } from "@/lib/crm";
 import { getSupabaseAdmin, tables } from "@/lib/db";
 import { recordingPathFromStoredRef } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
@@ -21,9 +22,9 @@ export async function fetchFirstCallLogRecordingBytes(callLogId: string): Promis
   if (!row) return null;
 
   let uri = "";
-  const refsRaw = row.telephonyRecordingRefs;
-  if (Array.isArray(refsRaw) && refsRaw.length > 0) {
-    uri = recordingPathFromStoredRef(refsRaw[0]);
+  const parsedRefs = parseTelephonyRecordingRefsJson(row.telephonyRecordingRefs);
+  if (parsedRefs?.length) {
+    uri = parsedRefs[0]!.contentUri;
   }
   if (!uri) {
     uri = recordingPathFromStoredRef({

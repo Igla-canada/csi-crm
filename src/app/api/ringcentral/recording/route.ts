@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getCurrentUserForApi } from "@/lib/auth";
+import { parseTelephonyRecordingRefsJson } from "@/lib/crm";
 import { getSupabaseAdmin, tables } from "@/lib/db";
 import { recordingPathFromStoredRef } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const caps = getUserCapabilities(user);
-  if (!caps.canViewClients) {
+  if (!caps.canViewCallsSection) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -33,9 +34,9 @@ export async function GET(req: NextRequest) {
   if (error) throw error;
 
   let uri = "";
-  const refsRaw = row?.telephonyRecordingRefs;
-  if (Array.isArray(refsRaw) && recordingIndex >= 0 && recordingIndex < refsRaw.length) {
-    uri = recordingPathFromStoredRef(refsRaw[recordingIndex]);
+  const parsedRefs = parseTelephonyRecordingRefsJson(row?.telephonyRecordingRefs);
+  if (parsedRefs && recordingIndex >= 0 && recordingIndex < parsedRefs.length) {
+    uri = parsedRefs[recordingIndex]!.contentUri;
   }
   if (!uri && recordingIndex === 0) {
     uri = recordingPathFromStoredRef({

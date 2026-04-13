@@ -358,7 +358,10 @@ function InboundHistoryRecordingSegmentButton({
           const el = audioRef.current;
           if (!el) return;
           if (playing) el.pause();
-          else void el.play().catch(() => {});
+          else
+            void el.play().catch((err) => {
+              console.warn("[call history] Could not play recording:", err);
+            });
         }}
       >
         {playing ? (

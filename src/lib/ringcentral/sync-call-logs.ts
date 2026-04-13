@@ -217,11 +217,47 @@ function forEachLegDepthFirst(legs: RcLeg[] | RcLeg | undefined, fn: (leg: RcLeg
   }
 }
 
+function directionLooksInbound(raw: string | undefined): boolean {
+  return String(raw ?? "").toLowerCase().includes("inbound");
+}
+
+function directionLooksOutbound(raw: string | undefined): boolean {
+  return String(raw ?? "").toLowerCase().includes("outbound");
+}
+
 /**
- * If the customer's number appears only as `from` across the record → they called us (inbound).
- * Only as `to` → we dialed them (outbound). Both or neither → unknown (fall back to RC `direction`).
+ * PSTN caller on an **inbound** leg (`from`) — survives internal forward/FindMe rows that are `outbound`.
  */
-function inferCustomerCallDirectionFromRecord(rec: RcCallRecord, customerDigits: string): CallDirection | null {
+function recordHasInboundCustomerOnFrom(rec: RcCallRecord, customerDigits: string): boolean {
+  if (customerDigits.length < MIN_DIGITS_LOOKUP) return false;
+  const fromMatches = (from: RcParty | undefined) => tryPartyPhone(from)?.digits === customerDigits;
+  if (directionLooksInbound(rec.direction) && fromMatches(rec.from)) return true;
+  let found = false;
+  forEachLegDepthFirst(rec.legs, (leg) => {
+    if (found) return;
+    if (directionLooksInbound(leg.direction) && fromMatches(leg.from)) found = true;
+  });
+  return found;
+}
+
+/** We placed an outbound call to the customer (`to` on an outbound leg). */
+function recordHasOutboundCustomerOnTo(rec: RcCallRecord, customerDigits: string): boolean {
+  if (customerDigits.length < MIN_DIGITS_LOOKUP) return false;
+  const toMatches = (to: RcParty | undefined) => tryPartyPhone(to)?.digits === customerDigits;
+  if (directionLooksOutbound(rec.direction) && toMatches(rec.to)) return true;
+  let found = false;
+  forEachLegDepthFirst(rec.legs, (leg) => {
+    if (found) return;
+    if (directionLooksOutbound(leg.direction) && toMatches(leg.to)) found = true;
+  });
+  return found;
+}
+
+/**
+ * If the customer's number appears only as `from` across the whole tree → they called us.
+ * Only as `to` → we dialed them. Both or neither → unknown (caller should use session-level rules).
+ */
+function inferCustomerCallDirectionFromRecordLegacy(rec: RcCallRecord, customerDigits: string): CallDirection | null {
   if (customerDigits.length < MIN_DIGITS_LOOKUP) return null;
   let seenFrom = false;
   let seenTo = false;
@@ -242,15 +278,26 @@ function inferCustomerCallDirectionFromRecord(rec: RcCallRecord, customerDigits:
   return null;
 }
 
+/**
+ * Prefer **inbound PSTN-from** on any session fragment before **outbound PSTN-to**, so hunt groups and
+ * unconditional forwards (101→202) do not flip the CRM row to outgoing just because the primary RC id is an internal leg.
+ */
 function resolveRingCentralCustomerDirection(
   primary: RcCallRecord,
   customerDigits: string,
   contextRecords: RcCallRecord[] | undefined,
 ): CallDirection | null {
-  const direct = inferCustomerCallDirectionFromRecord(primary, customerDigits);
-  if (direct) return direct;
-  for (const r of contextRecords ?? []) {
-    const d = inferCustomerCallDirectionFromRecord(r, customerDigits);
+  if (customerDigits.length < MIN_DIGITS_LOOKUP) return null;
+  const records = dedupeRcRecordsById([primary, ...(contextRecords ?? [])]);
+
+  for (const r of records) {
+    if (recordHasInboundCustomerOnFrom(r, customerDigits)) return CallDirection.INBOUND;
+  }
+  for (const r of records) {
+    if (recordHasOutboundCustomerOnTo(r, customerDigits)) return CallDirection.OUTBOUND;
+  }
+  for (const r of records) {
+    const d = inferCustomerCallDirectionFromRecordLegacy(r, customerDigits);
     if (d) return d;
   }
   return null;
@@ -808,6 +855,23 @@ function sameTelephonySession(a: RcCallRecord, b: RcCallRecord): boolean {
 const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
 /** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
 const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
+
+/**
+ * Re-fetch the CRM call log from RingCentral at these offsets after telephony session-end import.
+ * Recording metadata often appears well after the call row exists; the first import may show "completed"
+ * with no `contentUri` even when a recording will exist.
+ */
+export const TELEPHONY_RECORDING_REFRESH_DELAY_SEQUENCE_MS = [
+  12_000, 28_000, 72_000, 130_000, 240_000,
+] as const;
+
+export function buildTelephonyRecordingRefreshJobs(
+  callLogId: string,
+): Array<{ callLogId: string; delayMs: number }> {
+  const id = callLogId.trim();
+  if (!id) return [];
+  return TELEPHONY_RECORDING_REFRESH_DELAY_SEQUENCE_MS.map((delayMs) => ({ callLogId: id, delayMs }));
+}
 
 /**
  * Pages account call-log until `sessionId` matches (or pages exhaust). Used for webhook-time import and per-call refresh.

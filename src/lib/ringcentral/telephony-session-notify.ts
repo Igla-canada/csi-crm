@@ -14,7 +14,10 @@ import {
 import type { ExtensionActiveCallSummary } from "@/lib/ringcentral/fetch-extension-active-calls";
 import { getTelephonySessionEndGraceMs } from "@/lib/ringcentral/env";
 import { ringCentralResultLooksAnsweredConnectedRaw } from "@/lib/ringcentral/call-result";
-import { importCallLogForTelephonySessionEnd } from "@/lib/ringcentral/sync-call-logs";
+import {
+  buildTelephonyRecordingRefreshJobs,
+  importCallLogForTelephonySessionEnd,
+} from "@/lib/ringcentral/sync-call-logs";
 import {
   deleteTelephonyLiveSession,
   getTelephonyLiveSessionRow,
@@ -421,10 +424,8 @@ export async function applyRingCentralTelephonyWebhookBody(
         await deleteTelephonyLiveSession(payload.sessionId);
         try {
           const outcome = await importCallLogForTelephonySessionEnd(stub);
-          if (outcome?.missingRecording) {
-            for (const delayMs of [12_000, 28_000, 72_000, 130_000]) {
-              recordingRefreshJobs.push({ callLogId: outcome.callLogId, delayMs });
-            }
+          if (outcome) {
+            recordingRefreshJobs.push(...buildTelephonyRecordingRefreshJobs(outcome.callLogId));
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -535,10 +536,8 @@ export async function finalizeDeferredTelephonySessionEnd(
   }
   try {
     const outcome = await importCallLogForTelephonySessionEnd(stub);
-    if (outcome?.missingRecording) {
-      for (const delayMs of [12_000, 28_000, 72_000, 130_000]) {
-        recordingRefreshJobs.push({ callLogId: outcome.callLogId, delayMs });
-      }
+    if (outcome) {
+      recordingRefreshJobs.push(...buildTelephonyRecordingRefreshJobs(outcome.callLogId));
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
