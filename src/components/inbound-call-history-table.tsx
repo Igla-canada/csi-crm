@@ -465,11 +465,13 @@ function normPhoneDigits(raw: string | null | undefined): string {
 }
 
 function dockLineMatchesRow(dock: ActiveDockCallSnapshot, row: InboundCallHistoryRowDto): boolean {
-  if (dock.direction === "OUTBOUND") return false;
   const rd = normPhoneDigits(row.contactPhone);
   const dd = normPhoneDigits(dock.phoneDigits);
   if (!rd || !dd) return false;
-  return rd === dd;
+  if (rd !== dd) return false;
+  const dockOut = String(dock.direction ?? "").toUpperCase() === "OUTBOUND";
+  const rowOut = row.direction === "OUTBOUND";
+  return dockOut === rowOut;
 }
 
 function LiveDockSyntheticOpenLogButton({ dock }: { dock: ActiveDockCallSnapshot }) {
@@ -648,8 +650,7 @@ export function InboundCallHistoryTable({
   }, []);
 
   const merged = useMemo(() => {
-    const inboundDock = activeDockCalls.filter((c) => c.direction !== "OUTBOUND");
-    const synthetic = inboundDock
+    const synthetic = activeDockCalls
       .filter((d) => !rows.some((r) => dockLineMatchesRow(d, r)))
       .map((dock) => ({ kind: "synthetic" as const, dock }));
     const db = rows.map((row) => ({ kind: "db" as const, row }));
@@ -722,13 +723,14 @@ export function InboundCallHistoryTable({
           {merged.map((item) => {
             if (item.kind === "synthetic") {
               const { dock } = item;
+              const liveOut = String(dock.direction ?? "").toUpperCase() === "OUTBOUND";
               return (
                 <tr
                   key={`dock-live:${dock.key}`}
                   className="border-b border-slate-100 bg-emerald-50/40 last:border-0"
                 >
                   <td className="py-3 pr-2 align-top text-center text-slate-700">
-                    <InboundCallTypeIcon direction="INBOUND" telephonyResult={null} />
+                    <InboundCallTypeIcon direction={liveOut ? "OUTBOUND" : "INBOUND"} telephonyResult={null} />
                   </td>
                   <td className="py-3 pr-4 align-top text-slate-700">
                     <span className="font-medium text-emerald-800">Live now</span>
@@ -741,8 +743,9 @@ export function InboundCallHistoryTable({
                   <td className="py-3 pr-4 align-top text-slate-700">{dock.phoneDisplay}</td>
                   <td className="max-w-xs py-3 pr-4 align-top text-slate-600">
                     <span className="line-clamp-2">
-                      Incoming call in progress — open the log from the dock or here. This row disappears when
-                      the line clears.
+                      {liveOut
+                        ? "Outgoing call in progress — open the log from the dock or here. This row disappears when the line clears."
+                        : "Incoming call in progress — open the log from the dock or here. This row disappears when the line clears."}
                     </span>
                   </td>
                   <td className="py-3 pl-2 align-top text-right">

@@ -71,7 +71,7 @@ export default async function CallHistoryPage({
       <SectionHeading
         eyebrow="Calls"
         title="Call history"
-        text="Inbound and outbound calls, newest first. The first column icons mean: green incoming, amber outgoing, red missed / voicemail / no answer (from the carrier result). With Live sync on, this list re-fetches from the database on the same interval as the header. Refresh list pulls RingCentral for the selected range (or up to the last 7 days when no range), then reloads. TELUS detailed logs may list each leg separately; we show one row per RingCentral call, with result, length, and recording count when the platform provides them. Open log completes the stub on the client."
+        text="Inbound and outbound calls, newest first. The first column icons mean: green incoming, amber outgoing, red missed / voicemail / no answer (from the carrier result). With Live sync on, this list re-fetches from the database on the same interval as the header. Refresh list pulls RingCentral for the selected range (or up to the last 7 days when no range), then reloads. TELUS detailed logs may list each leg separately; we show one row per RingCentral call, with result, length, and recording count when the platform provides them. Open log works for both directions and completes the telephony stub on the client card."
         aside={
           <Suspense
             fallback={

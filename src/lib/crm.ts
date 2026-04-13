@@ -2484,8 +2484,9 @@ export async function markCallLogOpenedFromCallHistory(callLogId: string): Promi
   if (!row) {
     throw new UserInputError("Call not found.");
   }
-  if (String(row.direction) !== "INBOUND") {
-    throw new UserInputError("Only inbound calls appear in call history.");
+  const dir = String(row.direction ?? "").toUpperCase();
+  if (dir !== "INBOUND" && dir !== "OUTBOUND") {
+    throw new UserInputError("This call can’t be opened from call history.");
   }
   const clientId = row.clientId as string;
   if (row.openedFromCallHistoryAt) {
@@ -2526,7 +2527,7 @@ export async function markInboundTelephonyStubOpenedFromLiveDock(
   const { data: rows, error } = await sb()
     .from(tables.CallLog)
     .select("id,clientId,contactPhone,openedFromCallHistoryAt")
-    .eq("direction", "INBOUND")
+    .in("direction", ["INBOUND", "OUTBOUND"])
     .eq("telephonyDraft", true)
     .eq("summary", TELEPHONY_CALL_SUMMARY_PLACEHOLDER)
     .is("openedFromCallHistoryAt", null)
@@ -2762,8 +2763,9 @@ async function archiveDuplicateTelephonyCallbacksInWindow(params: {
 }
 
 /**
- * Idempotent on `ringCentralCallLogId`. Resolves client by phone (single match only);
- * otherwise creates a minimal client + primary phone `ContactPoint`.
+ * Idempotent on `ringCentralCallLogId`. Resolves client by phone: uses the **first** matching client
+ * (oldest `ContactPoint` for that normalized number) so repeat calls don’t spawn duplicate clients;
+ * creates a minimal client + primary phone only when no match exists.
  */
 export async function upsertCallLogFromRingCentralImport(
   row: RingCentralImportedCall,
@@ -2796,8 +2798,8 @@ export async function upsertCallLogFromRingCentralImport(
   let clientId: string;
   if (row.phoneNormalized.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) {
     const matches = await findClientsByNormalizedPhone(row.phoneNormalized);
-    if (matches.length === 1) {
-      clientId = matches[0].id;
+    if (matches.length >= 1) {
+      clientId = matches[0]!.id;
     } else {
       clientId = await createMinimalTelephonyClient(row.phoneNormalized, row.contactPhone10, row.contactName);
     }
