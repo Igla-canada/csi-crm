@@ -1412,11 +1412,18 @@ export async function getClientDetail(clientId: string): Promise<ClientDetailVie
 }
 
 export async function getAppointmentsOverview() {
-  const [{ data: appointments }, { data: configRow }, { data: users }] = await Promise.all([
+  const [aptRes, configRes, usersRes] = await Promise.all([
     sb().from(tables.Appointment).select("*").order("startAt", { ascending: true }),
     sb().from(tables.CalendarConfig).select("*").limit(1).maybeSingle(),
     sb().from(tables.User).select("*").order("name", { ascending: true }),
   ]);
+  if (aptRes.error) throw aptRes.error;
+  if (configRes.error) throw configRes.error;
+  if (usersRes.error) throw usersRes.error;
+
+  const appointments = aptRes.data;
+  const configRow = configRes.data;
+  const users = usersRes.data;
 
   const aptList = appointments ?? [];
   const clientIds = [...new Set(aptList.map((a) => a.clientId as string))];
@@ -1437,17 +1444,32 @@ export async function getAppointmentsOverview() {
     fetchPrimaryPhoneDisplayByClientIds(clientIds),
   ]);
 
-  const enriched = aptList.map((a) => ({
-    ...a,
-    startAt: toDate(a.startAt as string),
-    endAt: toDate(a.endAt as string),
-    createdAt: toDate(a.createdAt as string),
-    updatedAt: toDate(a.updatedAt as string),
-    client: clientMap.get(a.clientId as string)!,
-    clientPhone: primaryPhoneByClient.get(a.clientId as string) ?? null,
-    vehicle: a.vehicleId ? vehicleMap.get(a.vehicleId as string) ?? null : null,
-    createdBy: userMap.get(a.createdById as string)!,
-  }));
+  const enriched = aptList.map((a) => {
+    const clientId = a.clientId as string;
+    const createdById = a.createdById as string;
+    const client = clientMap.get(clientId) ?? {
+      id: clientId,
+      displayName: "Unknown client (missing or deleted)",
+    };
+    const createdBy = userMap.get(createdById) ?? {
+      id: createdById,
+      name: "Unknown user",
+      email: "",
+      role: "",
+      team: null as string | null,
+    };
+    return {
+      ...a,
+      startAt: toDate(a.startAt as string),
+      endAt: toDate(a.endAt as string),
+      createdAt: toDate(a.createdAt as string),
+      updatedAt: toDate(a.updatedAt as string),
+      client,
+      clientPhone: primaryPhoneByClient.get(clientId) ?? null,
+      vehicle: a.vehicleId ? vehicleMap.get(a.vehicleId as string) ?? null : null,
+      createdBy,
+    };
+  });
 
   const slotUsage = enriched.reduce<Record<string, number>>((acc, appointment) => {
     const key = (appointment.capacitySlot as string | null) ?? appointment.startAt.toISOString();
