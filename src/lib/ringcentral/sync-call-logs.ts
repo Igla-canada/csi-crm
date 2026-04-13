@@ -349,7 +349,7 @@ function isExcludedNonVoiceCallType(typeLower: string): boolean {
 function toImportedCall(
   rec: RcCallRecord,
   extraRecordings?: RecordingRef[],
-  opts?: { directionContextRecords?: RcCallRecord[] },
+  opts?: { directionContextRecords?: RcCallRecord[]; directionFallback?: CallDirection },
 ): RingCentralImportedCall | null {
   const id = String(rec.id ?? "").trim();
   if (!id) return null;
@@ -359,7 +359,7 @@ function toImportedCall(
 
   const phone = pickCustomerPhoneForImport(rec);
   const inferredDir = resolveRingCentralCustomerDirection(rec, phone.digits, opts?.directionContextRecords);
-  const direction = inferredDir ?? mapDirection(rec.direction);
+  const direction = inferredDir ?? mapDirection(rec.direction) ?? opts?.directionFallback ?? null;
   if (!direction) return null;
 
   const start = rec.startTime ? new Date(rec.startTime) : null;
@@ -1235,19 +1235,85 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
   }
 }
 
+function scoreRcRowForTelephonyPrimary(r: RcCallRecord, stubDigitsNorm: string): number {
+  let s = 0;
+  if (extractAllRecordingsFromRcRecord(r).length > 0) s += 100;
+  const d = String(r.direction ?? "").toLowerCase();
+  if (d.includes("inbound")) s += 50;
+  const phone = pickCustomerPhoneForImport(r);
+  if (stubDigitsNorm.length >= MIN_DIGITS_LOOKUP && phone.digits === stubDigitsNorm) s += 40;
+  return s;
+}
+
+/** Oldest-first API order often surfaces an internal leg first; prefer inbound / recording / caller match as primary. */
+function orderMatchedListForTelephonyImport(matchedList: RcCallRecord[], stubDigitsNorm: string): RcCallRecord[] {
+  return [...matchedList].sort(
+    (a, b) => scoreRcRowForTelephonyPrimary(b, stubDigitsNorm) - scoreRcRowForTelephonyPrimary(a, stubDigitsNorm),
+  );
+}
+
+async function tryImportRingCentralSessionRowsForStub(
+  platform: RcPlatform,
+  matchedList: RcCallRecord[],
+  stub: TelephonyWebhookSessionStubInput,
+  integrationUserId: string,
+  dateFrom: Date,
+  dateTo: Date,
+): Promise<{ imported: RingCentralImportedCall; callLogId: string } | null> {
+  if (!matchedList.length) return null;
+  const extErrors: string[] = [];
+  const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, dateFrom, dateTo, extErrors);
+  for (const msg of extErrors) {
+    console.warn(`[telephony-session-import] extension call-log map: ${msg}`);
+  }
+  const stubDigits = stub.phoneNormalized.replace(/\D/g, "");
+  const ordered = orderMatchedListForTelephonyImport(matchedList, stubDigits);
+
+  for (const primary of ordered) {
+    const pid = String(primary.id ?? "").trim();
+    if (!pid) continue;
+    const siblings = matchedList.filter((r) => String(r.id ?? "").trim() !== pid);
+    const fromSiblingRows = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
+    const fromExt = mergeRecordingRefsInOrder(
+      ...matchedList.map((r) => extensionRecordingExtrasForCall(r, byCallLogId, bySessionId)),
+    );
+    const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, pid);
+    const accountPrimaryDetail = await tryFetchCallLogRecordDetailed(platform, pid);
+    const fromAccountDetail = accountPrimaryDetail ? extractAllRecordingsFromRcRecord(accountPrimaryDetail) : [];
+    const imported = toImportedCall(
+      primary,
+      mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
+      { directionContextRecords: siblings, directionFallback: stub.direction },
+    );
+    if (!imported) continue;
+    await deleteCallLogWebhookTelephonyPlaceholder(stub.telephonySessionId);
+    const { callLogId } = await upsertCallLogFromRingCentralImport(imported, integrationUserId);
+    return { imported, callLogId };
+  }
+  return null;
+}
+
+export type TelephonySessionEndImportOutcome = {
+  callLogId: string;
+  /** True when no recording URI yet — RingCentral often attaches this seconds–minutes after hangup. */
+  missingRecording: boolean;
+};
+
 /**
  * When a telephony session ends (webhook), try to import the matching account call-log row immediately.
  * If RingCentral has not published it yet, writes a `webhook-ts:{session}` placeholder (same path as full sync).
  */
-export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhookSessionStubInput): Promise<void> {
+export async function importCallLogForTelephonySessionEnd(
+  stub: TelephonyWebhookSessionStubInput,
+): Promise<TelephonySessionEndImportOutcome | null> {
   const env = getRingCentralEnv();
   if (!env) {
-    return;
+    return null;
   }
 
   const sessionId = stub.telephonySessionId.trim();
   if (!sessionId) {
-    return;
+    return null;
   }
 
   const platform = await getRingCentralPlatform();
@@ -1264,44 +1330,31 @@ export async function importCallLogForTelephonySessionEnd(stub: TelephonyWebhook
     TELEPHONY_END_IMPORT_MAX_PAGES,
   );
 
-  if (matchedList.length > 0) {
-    const primary = matchedList[0];
-    const siblings = matchedList.slice(1);
-    const extErrors: string[] = [];
-    const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, dateFrom, dateTo, extErrors);
-    for (const msg of extErrors) {
-      console.warn(`[telephony-session-import] extension call-log map: ${msg}`);
-    }
-    const fromSiblingRows = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
-    const fromExt = mergeRecordingRefsInOrder(
-      ...matchedList.map((r) => extensionRecordingExtrasForCall(r, byCallLogId, bySessionId)),
-    );
-    const cid = String(primary.id ?? "").trim();
-    const fromDetail = await tryFetchExtensionCallLogDetailRecordings(platform, cid);
-    const accountPrimaryDetail = cid ? await tryFetchCallLogRecordDetailed(platform, cid) : null;
-    const fromAccountDetail = accountPrimaryDetail ? extractAllRecordingsFromRcRecord(accountPrimaryDetail) : [];
-    const imported = toImportedCall(
-      primary,
-      mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
-      { directionContextRecords: siblings },
-    );
-    if (imported) {
-      await deleteCallLogWebhookTelephonyPlaceholder(sessionId);
-      const { callLogId } = await upsertCallLogFromRingCentralImport(imported, env.integrationUserId);
-
-      const autoTx = getRingCentralAutoTranscribe();
-      if (autoTx && imported.recording?.contentUri) {
-        try {
-          if (await shouldStartAutoTranscriptionForCallLog(callLogId)) {
-            await startRingCentralSpeechToTextForCallLog(callLogId);
-          }
-        } catch {
-          /* non-fatal */
+  const hit = await tryImportRingCentralSessionRowsForStub(
+    platform,
+    matchedList,
+    stub,
+    env.integrationUserId,
+    dateFrom,
+    dateTo,
+  );
+  if (hit) {
+    const autoTx = getRingCentralAutoTranscribe();
+    if (autoTx && hit.imported.recording?.contentUri) {
+      try {
+        if (await shouldStartAutoTranscriptionForCallLog(hit.callLogId)) {
+          await startRingCentralSpeechToTextForCallLog(hit.callLogId);
         }
+      } catch {
+        /* non-fatal */
       }
-      return;
     }
+    return {
+      callLogId: hit.callLogId,
+      missingRecording: !Boolean(String(hit.imported.recording?.contentUri ?? "").trim()),
+    };
   }
 
-  await upsertCallLogFromTelephonyWebhookStub(stub, env.integrationUserId);
+  const { callLogId } = await upsertCallLogFromTelephonyWebhookStub(stub, env.integrationUserId);
+  return { callLogId, missingRecording: true };
 }

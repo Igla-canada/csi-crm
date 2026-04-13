@@ -1,6 +1,11 @@
+import { after } from "next/server";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { applyRingCentralTelephonyWebhookBody } from "@/lib/ringcentral/telephony-session-notify";
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export const dynamic = "force-dynamic";
 
@@ -40,7 +45,21 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { processed, payloadsSeen } = await applyRingCentralTelephonyWebhookBody(body);
+    const { processed, payloadsSeen, recordingRefreshJobs } = await applyRingCentralTelephonyWebhookBody(body);
+    for (const job of recordingRefreshJobs) {
+      after(async () => {
+        await sleepMs(job.delayMs);
+        try {
+          const { syncSingleRingCentralCallLogByCrmId } = await import("@/lib/ringcentral/sync-call-logs");
+          const result = await syncSingleRingCentralCallLogByCrmId(job.callLogId);
+          if (!result.ok && process.env.NODE_ENV === "development") {
+            console.info("[telephony-webhook] deferred recording refresh:", job.callLogId, result.error);
+          }
+        } catch (e) {
+          console.warn("[telephony-webhook] deferred recording refresh failed:", e);
+        }
+      });
+    }
     if (payloadsSeen === 0) {
       const keys = body && typeof body === "object" ? Object.keys(body as object) : [];
       const snippet = JSON.stringify(body).slice(0, 1200);

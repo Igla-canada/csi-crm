@@ -221,9 +221,6 @@ function pickDisplayParty(parties: RcParty[]): RcParty | null {
   if (!active.length) return null;
   const inbound = active.find((p) => String(p.direction ?? "").toLowerCase().includes("inbound"));
   if (inbound) return inbound;
-  /** Outbound / internal legs first: prefer any party we can map to a customer phone (parity with inbound caller display). */
-  const withCustomer = active.find((p) => customerFromParty(p) != null);
-  if (withCustomer) return withCustomer;
   return active[0] ?? null;
 }
 
@@ -290,9 +287,15 @@ function webhookStubDispositionFromParties(
  */
 export async function applyRingCentralTelephonyWebhookBody(
   envelope: unknown,
-): Promise<{ processed: number; payloadsSeen: number }> {
+): Promise<{
+  processed: number;
+  payloadsSeen: number;
+  /** Deferred `syncSingleRingCentralCallLogByCrmId` runs (RingCentral recording URLs often lag hangup). */
+  recordingRefreshJobs: Array<{ callLogId: string; delayMs: number }>;
+}> {
   const payloads = payloadsWithEventSessionFallback(envelope, extractSessionPayloads(envelope));
   let processed = 0;
+  const recordingRefreshJobs: Array<{ callLogId: string; delayMs: number }> = [];
 
   for (const payload of payloads) {
     if (shouldDropSession(payload.parties)) {
@@ -309,7 +312,12 @@ export async function applyRingCentralTelephonyWebhookBody(
         ...disp,
       };
       try {
-        await importCallLogForTelephonySessionEnd(stub);
+        const outcome = await importCallLogForTelephonySessionEnd(stub);
+        if (outcome?.missingRecording) {
+          for (const delayMs of [28_000, 72_000, 130_000]) {
+            recordingRefreshJobs.push({ callLogId: outcome.callLogId, delayMs });
+          }
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn("[telephony-webhook] importCallLogForTelephonySessionEnd failed:", msg);
@@ -352,7 +360,7 @@ export async function applyRingCentralTelephonyWebhookBody(
     processed += 1;
   }
 
-  return { processed, payloadsSeen: payloads.length };
+  return { processed, payloadsSeen: payloads.length, recordingRefreshJobs };
 }
 
 export function telephonyLiveRowsToDockSummaries(rows: TelephonyLiveSessionRow[]): ExtensionActiveCallSummary[] {
