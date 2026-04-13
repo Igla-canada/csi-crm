@@ -88,6 +88,8 @@ export type ExtensionActiveCallSummary = {
   phoneDigits: string;
   phoneDisplay: string;
   callerName: string | null;
+  /** Webhook-only: call ended in RC but CRM import is deferred (grace window). */
+  livePhase?: "active" | "finishing";
 };
 
 export type ExtensionActiveCallsFetchMeta = {

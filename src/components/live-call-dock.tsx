@@ -447,6 +447,11 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
                 <p className="mt-1 text-center text-[11px] text-slate-500">
                   {c.direction === "OUTBOUND" ? "Outbound" : "Inbound"}
                 </p>
+                {c.livePhase === "finishing" ? (
+                  <p className="mt-1.5 text-center text-[11px] font-medium leading-snug text-amber-800">
+                    Finishing call — the log is created after a short pause so forwards are not shown as missed.
+                  </p>
+                ) : null}
                 {canLogCalls ? (
                   <button
                     type="button"

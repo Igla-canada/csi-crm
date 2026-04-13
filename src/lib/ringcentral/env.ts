@@ -115,3 +115,33 @@ export function getExtensionActiveCallsApiPath(): { path: string; describeTarget
 export function isExtensionActiveCallsPollEnabled(): boolean {
   return trimEnv("RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS") === "false";
 }
+
+/**
+ * Extension **numbers** (e.g. 101,103) that only ring briefly before unconditional forward to another ext
+ * (e.g. 202). Carrier call logs often show "Missed" on these legs even when the call was answered on the target.
+ * We ignore those missed legs when picking the CRM result from a Detailed call-log tree (see call-result.ts).
+ * Comma / space / semicolon separated.
+ */
+export function getRingCentralCallLogStagingExtensionNumbers(): ReadonlySet<string> {
+  const raw = trimEnv("RINGCENTRAL_CALL_LOG_STAGING_EXTENSION_NUMBERS");
+  if (!raw) return new Set();
+  const out = new Set<string>();
+  for (const part of raw.split(/[,;\s]+/)) {
+    const d = part.trim().replace(/\D/g, "");
+    if (d.length >= 2 && d.length <= 8) out.add(d);
+  }
+  return out;
+}
+
+/**
+ * After RingCentral reports all parties ended, wait this long before writing the CRM call log so parallel
+ * hunt/forward legs can finish. Set to 0 to disable (immediate import, previous behavior).
+ * Default 12000 ms.
+ */
+export function getTelephonySessionEndGraceMs(): number {
+  const raw = trimEnv("RINGCENTRAL_TELEPHONY_SESSION_END_GRACE_MS");
+  if (raw == null || raw === "") return 12_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 12_000;
+  return Math.min(Math.max(Math.floor(n), 0), 60_000);
+}

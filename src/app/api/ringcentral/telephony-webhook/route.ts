@@ -1,7 +1,10 @@
 import { after } from "next/server";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { applyRingCentralTelephonyWebhookBody } from "@/lib/ringcentral/telephony-session-notify";
+import {
+  applyRingCentralTelephonyWebhookBody,
+  finalizeDeferredTelephonySessionEnd,
+} from "@/lib/ringcentral/telephony-session-notify";
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -45,7 +48,35 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { processed, payloadsSeen, recordingRefreshJobs } = await applyRingCentralTelephonyWebhookBody(body);
+    const { processed, payloadsSeen, recordingRefreshJobs, sessionFinalizeJobs } =
+      await applyRingCentralTelephonyWebhookBody(body);
+    for (const job of sessionFinalizeJobs) {
+      after(async () => {
+        await sleepMs(job.delayMs);
+        try {
+          const { recordingRefreshJobs: postFinalizeRecording } = await finalizeDeferredTelephonySessionEnd(
+            job.sessionId,
+            job.token,
+          );
+          for (const rj of postFinalizeRecording) {
+            after(async () => {
+              await sleepMs(rj.delayMs);
+              try {
+                const { syncSingleRingCentralCallLogByCrmId } = await import("@/lib/ringcentral/sync-call-logs");
+                const result = await syncSingleRingCentralCallLogByCrmId(rj.callLogId);
+                if (!result.ok && process.env.NODE_ENV === "development") {
+                  console.info("[telephony-webhook] deferred recording refresh:", rj.callLogId, result.error);
+                }
+              } catch (e) {
+                console.warn("[telephony-webhook] deferred recording refresh failed:", e);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn("[telephony-webhook] deferred session finalize failed:", e);
+        }
+      });
+    }
     for (const job of recordingRefreshJobs) {
       after(async () => {
         await sleepMs(job.delayMs);

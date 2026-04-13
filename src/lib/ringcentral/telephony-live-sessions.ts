@@ -10,6 +10,10 @@ export type TelephonyLiveSessionRow = {
   phoneDisplay: string;
   callerName: string | null;
   updatedAt: string;
+  /** When set, session is in post-call grace before CRM import (see telephony-session-notify). */
+  endingGraceUntil?: string | null;
+  endingStubJson?: string | null;
+  endingToken?: string | null;
 };
 
 const TTL_MS = 45 * 60 * 1000;
@@ -38,6 +42,9 @@ export async function upsertTelephonyLiveSession(
         phoneDigits: row.phoneDigits,
         phoneDisplay: row.phoneDisplay,
         callerName: row.callerName,
+        endingGraceUntil: row.endingGraceUntil ?? null,
+        endingStubJson: row.endingStubJson ?? null,
+        endingToken: row.endingToken ?? null,
         updatedAt,
       },
       { onConflict: "telephonySessionId" },
@@ -54,7 +61,9 @@ export async function listTelephonyLiveSessionsForDock(): Promise<TelephonyLiveS
   await purgeStaleTelephonyLiveSessions();
   const { data, error } = await sb()
     .from(tables.TelephonyLiveSession)
-    .select("telephonySessionId,direction,statusCode,phoneDigits,phoneDisplay,callerName,updatedAt")
+    .select(
+      "telephonySessionId,direction,statusCode,phoneDigits,phoneDisplay,callerName,updatedAt,endingGraceUntil,endingStubJson,endingToken",
+    )
     .order("updatedAt", { ascending: false })
     .limit(20);
   if (error) throw error;
@@ -65,9 +74,27 @@ export async function listTelephonyLiveSessionsForDock(): Promise<TelephonyLiveS
 export async function listTelephonyLiveSessionsDebug(): Promise<TelephonyLiveSessionRow[]> {
   const { data, error } = await sb()
     .from(tables.TelephonyLiveSession)
-    .select("telephonySessionId,direction,statusCode,phoneDigits,phoneDisplay,callerName,updatedAt")
+    .select(
+      "telephonySessionId,direction,statusCode,phoneDigits,phoneDisplay,callerName,updatedAt,endingGraceUntil,endingStubJson,endingToken",
+    )
     .order("updatedAt", { ascending: false })
     .limit(25);
   if (error) throw error;
   return (data ?? []) as TelephonyLiveSessionRow[];
+}
+
+export async function getTelephonyLiveSessionRow(
+  telephonySessionId: string,
+): Promise<TelephonyLiveSessionRow | null> {
+  const id = telephonySessionId.trim();
+  if (!id) return null;
+  const { data, error } = await sb()
+    .from(tables.TelephonyLiveSession)
+    .select(
+      "telephonySessionId,direction,statusCode,phoneDigits,phoneDisplay,callerName,updatedAt,endingGraceUntil,endingStubJson,endingToken",
+    )
+    .eq("telephonySessionId", id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data ?? null) as TelephonyLiveSessionRow | null;
 }

@@ -724,16 +724,19 @@ export function InboundCallHistoryTable({
             if (item.kind === "synthetic") {
               const { dock } = item;
               const liveOut = String(dock.direction ?? "").toUpperCase() === "OUTBOUND";
+              const finishing = dock.livePhase === "finishing";
               return (
                 <tr
                   key={`dock-live:${dock.key}`}
-                  className="border-b border-slate-100 bg-emerald-50/40 last:border-0"
+                  className={`border-b border-slate-100 last:border-0 ${finishing ? "bg-amber-50/50" : "bg-emerald-50/40"}`}
                 >
                   <td className="py-3 pr-2 align-top text-center text-slate-700">
                     <InboundCallTypeIcon direction={liveOut ? "OUTBOUND" : "INBOUND"} telephonyResult={null} />
                   </td>
                   <td className="py-3 pr-4 align-top text-slate-700">
-                    <span className="font-medium text-emerald-800">Live now</span>
+                    <span className={`font-medium ${finishing ? "text-amber-900" : "text-emerald-800"}`}>
+                      {finishing ? "Finishing call" : "Live now"}
+                    </span>
                   </td>
                   <td className="py-3 pr-3 align-top text-slate-400">—</td>
                   <td className="py-3 pr-3 align-top text-slate-400">—</td>
@@ -743,9 +746,11 @@ export function InboundCallHistoryTable({
                   <td className="py-3 pr-4 align-top text-slate-700">{dock.phoneDisplay}</td>
                   <td className="max-w-xs py-3 pr-4 align-top text-slate-600">
                     <span className="line-clamp-2">
-                      {liveOut
-                        ? "Outgoing call in progress — open the log from the dock or here. This row disappears when the line clears."
-                        : "Incoming call in progress — open the log from the dock or here. This row disappears when the line clears."}
+                      {finishing
+                        ? "The carrier ended this session on one leg; we wait briefly before creating the call log so hunt groups and forwards are not saved as missed."
+                        : liveOut
+                          ? "Outgoing call in progress — open the log from the dock or here. This row disappears when the line clears."
+                          : "Incoming call in progress — open the log from the dock or here. This row disappears when the line clears."}
                     </span>
                   </td>
                   <td className="py-3 pl-2 align-top text-right">

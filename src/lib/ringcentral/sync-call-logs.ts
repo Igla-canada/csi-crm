@@ -21,7 +21,7 @@ import { CallDirection, getSupabaseAdmin, tables } from "@/lib/db";
 import { getRingCentralAutoTranscribe, getRingCentralEnv } from "@/lib/ringcentral/env";
 import { recordingPathFromStoredRef, stableRecordingIdForPath } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
-import { dispositionFromRingCentralRecord } from "@/lib/ringcentral/call-result";
+import { dispositionFromRingCentralRecordWithSessionContext } from "@/lib/ringcentral/call-result";
 import {
   shouldStartAutoTranscriptionForCallLog,
   startRingCentralSpeechToTextForCallLog,
@@ -336,6 +336,20 @@ function pickCustomerPhoneForImport(
   };
 }
 
+/** Primary row may omit the PSTN party; same-session siblings often carry the customer number. */
+function pickCustomerPhoneForImportWithContext(
+  rec: RcCallRecord,
+  contextRecords: RcCallRecord[] | undefined,
+): ReturnType<typeof pickCustomerPhoneForImport> {
+  const direct = pickCustomerPhoneForImport(rec);
+  if (direct.digits.length >= MIN_DIGITS_LOOKUP) return direct;
+  for (const r of contextRecords ?? []) {
+    const hit = pickCustomerPhoneForImport(r);
+    if (hit.digits.length >= MIN_DIGITS_LOOKUP) return hit;
+  }
+  return direct;
+}
+
 function isExcludedNonVoiceCallType(typeLower: string): boolean {
   if (!typeLower) return false;
   return (
@@ -357,7 +371,7 @@ function toImportedCall(
   if (isExcludedNonVoiceCallType(type)) return null;
   /* List requests already use `type=Voice`; do not drop rows on unknown `type` strings (TELUS / RC variants). */
 
-  const phone = pickCustomerPhoneForImport(rec);
+  const phone = pickCustomerPhoneForImportWithContext(rec, opts?.directionContextRecords);
   const inferredDir = resolveRingCentralCustomerDirection(rec, phone.digits, opts?.directionContextRecords);
   const direction = inferredDir ?? mapDirection(rec.direction) ?? opts?.directionFallback ?? null;
   if (!direction) return null;
@@ -370,7 +384,9 @@ function toImportedCall(
   const merged = mergeRecordingRefsInOrder(extraRecordings, extractAllRecordingsFromRcRecord(rec));
   const primary = merged[0];
   const meta = rec as unknown as Record<string, unknown>;
-  const disp = dispositionFromRingCentralRecord(meta, direction);
+  const peerMetas =
+    opts?.directionContextRecords?.map((r) => r as unknown as Record<string, unknown>) ?? [];
+  const disp = dispositionFromRingCentralRecordWithSessionContext(meta, direction, peerMetas);
 
   return {
     ringCentralCallLogId: id,
@@ -860,6 +876,72 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
   });
 }
 
+/**
+ * Call forwarding / multi-extension splits sometimes put `sessionId` vs `telephonySessionId` on different account
+ * call-log rows (e.g. 101 staging vs 202 answer). BFS on session hints merges the graph so peer disposition works.
+ */
+const RC_SESSION_GRAPH_EXPAND_MAX_HINTS = 36;
+const RC_SESSION_GRAPH_EXPAND_MAX_IDS = 80;
+
+async function expandRcSessionRecordGraph(
+  platform: RcPlatform,
+  seedRecords: RcCallRecord[],
+  dateFrom: Date,
+  dateTo: Date,
+  maxPages: number,
+): Promise<RcCallRecord[]> {
+  const byId = new Map<string, RcCallRecord>();
+  for (const r of seedRecords) {
+    const id = String(r.id ?? "").trim();
+    if (id) byId.set(id, r);
+  }
+  const seenHints = new Set<string>();
+  const hintQueue: string[] = [];
+  for (const r of seedRecords) {
+    for (const h of collectSessionHintsFromRcRecords(r)) {
+      if (!seenHints.has(h)) {
+        seenHints.add(h);
+        hintQueue.push(h);
+      }
+    }
+  }
+  let processed = 0;
+  while (
+    hintQueue.length > 0 &&
+    processed < RC_SESSION_GRAPH_EXPAND_MAX_HINTS &&
+    byId.size < RC_SESSION_GRAPH_EXPAND_MAX_IDS
+  ) {
+    const h = hintQueue.shift()!;
+    processed += 1;
+    const rows = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+      platform,
+      h,
+      dateFrom,
+      dateTo,
+      undefined,
+      maxPages,
+    );
+    for (const r of rows) {
+      const id = String(r.id ?? "").trim();
+      if (!id) continue;
+      if (!byId.has(id)) {
+        byId.set(id, r);
+        for (const nh of collectSessionHintsFromRcRecords(r)) {
+          if (!seenHints.has(nh)) {
+            seenHints.add(nh);
+            hintQueue.push(nh);
+          }
+        }
+      }
+    }
+  }
+  return [...byId.values()].sort((a, b) => {
+    const ta = a.startTime ? new Date(a.startTime).getTime() : 0;
+    const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
+    return ta - tb;
+  });
+}
+
 /** Numeric `sessionId` and `telephonySessionId` (`s-…`) can both appear; union lookups so sibling rows are not missed. */
 function collectSessionHintsFromRcRecords(...parts: (RcCallRecord | null | undefined)[]): string[] {
   const hints = new Set<string>();
@@ -1129,10 +1211,11 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     console.warn(`[sync-single-call-log] extension call-log map: ${msg}`);
   }
 
-  const buildImportedFromSessionRows = async (matchedList: RcCallRecord[]) => {
+  const buildImportedFromSessionRows = async (matchedList: RcCallRecord[], orderStubDigitsNorm: string) => {
     if (matchedList.length === 0) return null;
-    const primary = matchedList[0];
-    const siblings = matchedList.slice(1);
+    const ordered = orderMatchedListForTelephonyImport(matchedList, orderStubDigitsNorm);
+    const primary = ordered[0]!;
+    const siblings = ordered.slice(1);
     const fromSiblingRows = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
     const fromExt = mergeRecordingRefsInOrder(
       ...matchedList.map((r) => extensionRecordingExtrasForCall(r, byCallLogId, bySessionId)),
@@ -1153,7 +1236,7 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     if (!sessionId) {
       return { ok: false, error: "Invalid RingCentral session placeholder on this call." };
     }
-    const matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+    let matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
       platform,
       sessionId,
       windowStart,
@@ -1161,7 +1244,14 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
       undefined,
       TELEPHONY_END_IMPORT_MAX_PAGES,
     );
-    const imported = await buildImportedFromSessionRows(matchedList);
+    matchedList = await expandRcSessionRecordGraph(
+      platform,
+      matchedList,
+      windowStart,
+      windowEnd,
+      TELEPHONY_END_IMPORT_MAX_PAGES,
+    );
+    const imported = await buildImportedFromSessionRows(matchedList, "");
     if (!imported) {
       return {
         ok: false,
@@ -1261,6 +1351,13 @@ async function tryImportRingCentralSessionRowsForStub(
   dateTo: Date,
 ): Promise<{ imported: RingCentralImportedCall; callLogId: string } | null> {
   if (!matchedList.length) return null;
+  matchedList = await expandRcSessionRecordGraph(
+    platform,
+    matchedList,
+    dateFrom,
+    dateTo,
+    TELEPHONY_END_IMPORT_MAX_PAGES,
+  );
   const extErrors: string[] = [];
   const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, dateFrom, dateTo, extErrors);
   for (const msg of extErrors) {

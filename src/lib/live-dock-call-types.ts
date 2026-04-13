@@ -5,4 +5,6 @@ export type ActiveDockCallSnapshot = {
   phoneDigits: string;
   phoneDisplay: string;
   callerName: string | null;
+  /** Present when the carrier ended the session but we have not written the CRM row yet. */
+  livePhase?: "active" | "finishing";
 };
