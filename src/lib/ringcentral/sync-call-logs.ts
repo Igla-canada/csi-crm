@@ -1343,8 +1343,12 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     if (matchedList.length === 0) return null;
     const ordered = orderMatchedListForTelephonyImport(matchedList, orderStubDigitsNorm);
     const primary = ordered[0]!;
-    const siblings = ordered.slice(1);
-    const fromSiblingRows = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
+    const pid = String(primary.id ?? "").trim();
+    /** Every other session row — not `ordered.slice(1)` — so direction/recording context matches the full graph. */
+    const directionPeers = matchedList.filter((r) => String(r.id ?? "").trim() !== pid);
+    const fromSiblingRows = mergeRecordingRefsInOrder(
+      ...directionPeers.map((r) => extractAllRecordingsFromRcRecord(r)),
+    );
     const fromExt = mergeRecordingRefsInOrder(
       ...matchedList.map((r) => extensionRecordingExtrasForCall(r, byCallLogId, bySessionId)),
     );
@@ -1355,7 +1359,7 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     return toImportedCall(
       primary,
       mergeRecordingRefsInOrder(fromAccountDetail, fromSiblingRows, fromExt, fromDetail),
-      { directionContextRecords: siblings },
+      { directionContextRecords: directionPeers },
     );
   };
 
@@ -1429,7 +1433,7 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
       ...collectSessionHintsFromStoredMetadata(storedMeta),
     ]),
   ];
-  const siblings = await loadSiblingRcRecordsForSessionHints(
+  const flatSiblings = await loadSiblingRcRecordsForSessionHints(
     platform,
     sessionHints,
     windowStart,
@@ -1437,10 +1441,20 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
     rcKey,
     TELEPHONY_END_IMPORT_MAX_PAGES,
   );
-  const siblingRefs = mergeRecordingRefsInOrder(...siblings.map((r) => extractAllRecordingsFromRcRecord(r)));
+  const expanded = await expandRcSessionRecordGraph(
+    platform,
+    dedupeRcRecordsById([rec, ...flatSiblings]),
+    windowStart,
+    windowEnd,
+    TELEPHONY_END_IMPORT_MAX_PAGES,
+  );
+  const sessionOthers = expanded.filter((r) => String(r.id ?? "").trim() !== rcKey);
+  const siblingRefs = mergeRecordingRefsInOrder(
+    ...sessionOthers.map((r) => extractAllRecordingsFromRcRecord(r)),
+  );
 
   const imported = toImportedCall(rec, mergeRecordingRefsInOrder(siblingRefs, extras), {
-    directionContextRecords: siblings,
+    directionContextRecords: sessionOthers,
   });
   if (!imported) {
     return { ok: false, error: "Could not build RingCentral import for this call." };
