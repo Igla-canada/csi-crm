@@ -434,6 +434,17 @@ function maxDurationSecondsAcrossRcRecords(records: RcCallRecord[]): number {
   return m;
 }
 
+/** Earliest `startTime` across session fragments (internal legs start after the PSTN inbound row). */
+function earliestStartTimeAmongRecords(records: RcCallRecord[]): Date | null {
+  let best: number | null = null;
+  for (const r of records) {
+    const t = r.startTime ? new Date(r.startTime).getTime() : NaN;
+    if (!Number.isFinite(t)) continue;
+    if (best == null || t < best) best = t;
+  }
+  return best != null ? new Date(best) : null;
+}
+
 function toImportedCall(
   rec: RcCallRecord,
   extraRecordings?: RecordingRef[],
@@ -452,6 +463,16 @@ function toImportedCall(
 
   const start = rec.startTime ? new Date(rec.startTime) : null;
   if (!start || Number.isNaN(start.getTime())) return null;
+
+  const contextDeduped = dedupeRcRecordsById(opts?.directionContextRecords ?? []);
+  const sessionEarliest = earliestStartTimeAmongRecords([rec, ...contextDeduped]);
+  const happenedAt =
+    contextDeduped.length > 0 &&
+    sessionEarliest &&
+    !Number.isNaN(sessionEarliest.getTime()) &&
+    sessionEarliest.getTime() < start.getTime()
+      ? sessionEarliest
+      : start;
 
   // Prefer extras (siblings, extension map, account Detail fetch) over list-row extractions so FindMe/transfer legs
   // with the real recording win when the parent row carries a stale or empty ref (common on TELUS-style logs).
@@ -476,7 +497,7 @@ function toImportedCall(
   return {
     ringCentralCallLogId: id,
     direction,
-    happenedAt: start,
+    happenedAt,
     phoneNormalized: phone.digits,
     contactPhone10: phone.callLog10,
     contactName: sanitizeTelephonyContactName(phone.name),
@@ -722,7 +743,8 @@ export async function syncRingCentralVoiceCallLogsFromApi(
 
   const { byCallLogId, bySessionId } = await loadExtensionRecordingMaps(platform, dateFrom, dateTo, result.errors);
 
-  const sessionRowCache = new Map<string, RcCallRecord[]>();
+  /** Hint string → full session graph from {@link expandRcSessionRecordGraph} (dedupes repeat work across rows). */
+  const sessionGraphByAnyHint = new Map<string, RcCallRecord[]>();
 
   let page = 1;
   const perPage = 250;
@@ -790,35 +812,40 @@ export async function syncRingCentralVoiceCallLogsFromApi(
           : await recordingRefsFromAccountCallLogDetail(platform, w.cid);
         extra = mergeRecordingRefsInOrder(refs, extra);
       }
-      const mergedSoFar = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra);
       const hints = w.cid ? collectSessionHintsFromRcRecords(w.rec, detailRow) : [];
 
       /**
-       * Always attach other account call-log rows for the same telephony session to `directionContext`.
-       * Previously we only paged the session when **no** recording URI was found; then internal outbound legs
-       * (FindMe / forward) missed the inbound fragment and fell back to `direction: Outbound` + weak recording merge.
+       * BFS session graph (same as telephony webhook import): 101→102 / FindMe / park legs often use different
+       * `sessionId` vs `telephonySessionId` values — paging only the primary row’s hints misses linked rows.
        */
       if (hints.length > 0 && w.cid) {
-        let recordingStillMissing = mergedSoFar.length === 0;
+        let expanded: RcCallRecord[] | undefined;
         for (const h of hints) {
-          const group = await loadAccountRowsForSessionHintCached(
+          expanded = sessionGraphByAnyHint.get(h);
+          if (expanded) break;
+        }
+        if (!expanded) {
+          const seeds = dedupeRcRecordsById([
+            w.rec,
+            ...w.sessionMates,
+            ...(detailRow ? [detailRow] : []),
+          ]);
+          expanded = await expandRcSessionRecordGraph(
             platform,
-            h,
+            seeds,
             dateFrom,
             dateTo,
             RC_BULK_SESSION_LOOKUP_MAX_PAGES,
-            sessionRowCache,
           );
-          const sib = group.filter((r) => String(r.id ?? "").trim() !== w.cid);
-          directionContext.push(...sib);
-          extra = mergeRecordingRefsInOrder(extra, ...sib.map((r) => extractAllRecordingsFromRcRecord(r)));
-          if (
-            recordingStillMissing &&
-            mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length > 0
-          ) {
-            recordingStillMissing = false;
+          for (const r of expanded) {
+            for (const hint of collectSessionHintsFromRcRecords(r)) {
+              if (!sessionGraphByAnyHint.has(hint)) sessionGraphByAnyHint.set(hint, expanded);
+            }
           }
         }
+        const expandedOthers = expanded.filter((r) => String(r.id ?? "").trim() !== w.cid);
+        directionContext.push(...expandedOthers);
+        extra = mergeRecordingRefsInOrder(extra, ...expandedOthers.map((r) => extractAllRecordingsFromRcRecord(r)));
       }
       const imported = toImportedCall(w.rec, extra, {
         directionContextRecords: dedupeRcRecordsById(directionContext),
@@ -891,13 +918,27 @@ function recordMatchesTelephonySession(rec: RcCallRecord, telephonySessionId: st
   return Boolean(sid && sid === want);
 }
 
+/**
+ * Same voice session when any session identifier matches (101→102 splits often put `sessionId` on one row and
+ * `telephonySessionId` on another, or only one field is populated per leg).
+ */
 function sameTelephonySession(a: RcCallRecord, b: RcCallRecord): boolean {
-  const tsA = String(a.telephonySessionId ?? "").trim();
-  const tsB = String(b.telephonySessionId ?? "").trim();
-  if (tsA && tsA === tsB) return true;
-  const sA = String(a.sessionId ?? "").trim();
-  const sB = String(b.sessionId ?? "").trim();
-  return Boolean(sA && sA === sB);
+  const idsA = [
+    ...new Set(
+      [String(a.telephonySessionId ?? "").trim(), String(a.sessionId ?? "").trim()].filter(Boolean),
+    ),
+  ];
+  const idsB = [
+    ...new Set(
+      [String(b.telephonySessionId ?? "").trim(), String(b.sessionId ?? "").trim()].filter(Boolean),
+    ),
+  ];
+  for (const x of idsA) {
+    for (const y of idsB) {
+      if (x === y) return true;
+    }
+  }
+  return false;
 }
 
 const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
@@ -1108,32 +1149,7 @@ async function loadSiblingRcRecordsForSessionHints(
   return [...byId.values()];
 }
 
-async function loadAccountRowsForSessionHintCached(
-  platform: RcPlatform,
-  hint: string,
-  dateFrom: Date,
-  dateTo: Date,
-  maxPages: number,
-  cache: Map<string, RcCallRecord[]>,
-): Promise<RcCallRecord[]> {
-  const k = hint.trim();
-  if (!k) return [];
-  let rows = cache.get(k);
-  if (!rows) {
-    rows = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
-      platform,
-      k,
-      dateFrom,
-      dateTo,
-      undefined,
-      maxPages,
-    );
-    cache.set(k, rows);
-  }
-  return rows;
-}
-
-/** Full sync: cheaper session paging than webhook/single-call refresh (many rows share few sessions). */
+/** Full sync: session graph paging (shared with telephony BFS expand). */
 const RC_BULK_SESSION_LOOKUP_MAX_PAGES = 24;
 
 async function tryFetchCallLogRecordDetailed(platform: RcPlatform, callLogId: string): Promise<RcCallRecord | null> {
