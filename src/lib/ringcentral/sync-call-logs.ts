@@ -286,6 +286,16 @@ function rcRecordStartTimeMs(r: RcCallRecord): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+/** Fallback direction when customer-number matching is ambiguous: use the first directional row in session time order. */
+function resolveSessionDirectionByChronology(records: RcCallRecord[]): CallDirection | null {
+  const ordered = dedupeRcRecordsById(records).sort((a, b) => rcRecordStartTimeMs(a) - rcRecordStartTimeMs(b));
+  for (const r of ordered) {
+    const d = mapDirection(r.direction);
+    if (d) return d;
+  }
+  return null;
+}
+
 /**
  * Prefer **inbound PSTN-from** on any session fragment before **outbound PSTN-to**, so hunt groups and
  * unconditional forwards (101→202) do not flip the CRM row to outgoing just because the primary RC id is an internal leg.
@@ -551,15 +561,16 @@ function toImportedCall(
   /* List requests already use `type=Voice`; do not drop rows on unknown `type` strings (TELUS / RC variants). */
 
   const phone = pickCustomerPhoneForImportWithContext(rec, opts?.directionContextRecords);
-  const inferredDir = resolveRingCentralCustomerDirection(rec, phone.digits, opts?.directionContextRecords);
-  const direction = inferredDir ?? mapDirection(rec.direction) ?? opts?.directionFallback ?? null;
+  const contextDeduped = dedupeRcRecordsById(opts?.directionContextRecords ?? []);
+  const sessionRows = dedupeRcRecordsById([rec, ...contextDeduped]);
+  const inferredDir = resolveRingCentralCustomerDirection(rec, phone.digits, contextDeduped);
+  const sessionChronologyDir = resolveSessionDirectionByChronology(sessionRows);
+  const direction = inferredDir ?? sessionChronologyDir ?? opts?.directionFallback ?? mapDirection(rec.direction) ?? null;
   if (!direction) return null;
 
   const start = rec.startTime ? new Date(rec.startTime) : null;
   if (!start || Number.isNaN(start.getTime())) return null;
 
-  const contextDeduped = dedupeRcRecordsById(opts?.directionContextRecords ?? []);
-  const sessionRows = dedupeRcRecordsById([rec, ...contextDeduped]);
   const sessionEarliest = earliestStartTimeAmongRecords(sessionRows);
   const happenedAt =
     contextDeduped.length > 0 &&
@@ -586,6 +597,10 @@ function toImportedCall(
   const disp = dispositionFromRingCentralRecordWithSessionContext(metaRaw, direction, peerMetas);
 
   const metaOut: Record<string, unknown> = { ...metaRaw };
+  const sessionKeyHints = collectSessionHintsFromRcRecords(...sessionRows);
+  if (sessionKeyHints.length > 0) {
+    metaOut.sessionKeyHints = sessionKeyHints;
+  }
   const durationAcrossSession = maxDurationSecondsAcrossRcRecords(sessionRows);
   if (durationAcrossSession > 0) {
     const existingTop = numDurationField(metaOut.duration);
@@ -884,7 +899,7 @@ export async function syncRingCentralVoiceCallLogsFromApi(
         ...sessionMates.map((r) => extractAllRecordingsFromRcRecord(r)),
       );
       const cid = String(rec.id ?? "").trim();
-      let extra = mergeRecordingRefsInOrder(
+      const extra = mergeRecordingRefsInOrder(
         fromSiblingsOnPage,
         extensionRecordingExtrasForCall(rec, byCallLogId, bySessionId),
       );
@@ -1215,6 +1230,13 @@ function collectSessionHintsFromStoredMetadata(meta: unknown): string[] {
   for (const key of ["telephonySessionId", "sessionId"] as const) {
     const s = String(o[key] ?? "").trim();
     if (s) hints.add(s);
+  }
+  const extra = o.sessionKeyHints;
+  if (Array.isArray(extra)) {
+    for (const item of extra) {
+      const s = String(item ?? "").trim();
+      if (s) hints.add(s);
+    }
   }
   return [...hints];
 }

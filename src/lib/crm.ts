@@ -470,6 +470,16 @@ function dedupeTelephonyRecordingRefs(
   return out;
 }
 
+function mergeTelephonyRecordingRefs(
+  existingRaw: unknown,
+  incoming: Array<{ id: string; contentUri: string }> | null | undefined,
+): Array<{ id: string; contentUri: string }> | null {
+  const prev = parseTelephonyRecordingRefsJson(existingRaw) ?? [];
+  const next = incoming ?? [];
+  const merged = dedupeTelephonyRecordingRefs([...next, ...prev]);
+  return merged.length > 0 ? merged : null;
+}
+
 async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLogWithRelations[]> {
   if (!rows.length) return [];
   const clientIds = [...new Set(rows.map((r) => r.clientId as string | null).filter(Boolean))] as string[];
@@ -2896,7 +2906,7 @@ export async function upsertCallLogFromRingCentralImport(
 
   const { data: existing } = await sb()
     .from(tables.CallLog)
-    .select("id,clientId,telephonyDraft,summary")
+    .select("id,clientId,telephonyDraft,summary,telephonyRecordingRefs")
     .eq("ringCentralCallLogId", row.ringCentralCallLogId)
     .maybeSingle();
 
@@ -2952,14 +2962,16 @@ export async function upsertCallLogFromRingCentralImport(
     };
     if (row.recordings !== undefined) {
       const refs = row.recordings.length ? dedupeTelephonyRecordingRefs(row.recordings) : null;
-      patch.telephonyRecordingRefs = refs;
-      patch.telephonyRecordingId = refs?.[0]?.id ?? null;
-      patch.telephonyRecordingContentUri = refs?.[0]?.contentUri ?? null;
+      const mergedRefs = mergeTelephonyRecordingRefs(existing.telephonyRecordingRefs, refs);
+      patch.telephonyRecordingRefs = mergedRefs;
+      patch.telephonyRecordingId = mergedRefs?.[0]?.id ?? null;
+      patch.telephonyRecordingContentUri = mergedRefs?.[0]?.contentUri ?? null;
     } else if (row.recording) {
       const one = dedupeTelephonyRecordingRefs([row.recording]);
-      patch.telephonyRecordingRefs = one;
-      patch.telephonyRecordingId = one[0]?.id ?? null;
-      patch.telephonyRecordingContentUri = one[0]?.contentUri ?? null;
+      const mergedRefs = mergeTelephonyRecordingRefs(existing.telephonyRecordingRefs, one);
+      patch.telephonyRecordingRefs = mergedRefs;
+      patch.telephonyRecordingId = mergedRefs?.[0]?.id ?? null;
+      patch.telephonyRecordingContentUri = mergedRefs?.[0]?.contentUri ?? null;
     }
     if (!existing.telephonyDraft) {
       patch.telephonyCallbackPending = false;
@@ -3040,7 +3052,7 @@ export async function applyRingCentralImportToExistingCallLogById(
 ): Promise<void> {
   const { data: existing, error: exErr } = await sb()
     .from(tables.CallLog)
-    .select("id,clientId,telephonyDraft,summary")
+    .select("id,clientId,telephonyDraft,summary,telephonyRecordingRefs")
     .eq("id", crmCallLogId)
     .maybeSingle();
   if (exErr) throw exErr;
@@ -3065,14 +3077,16 @@ export async function applyRingCentralImportToExistingCallLogById(
   };
   if (row.recordings !== undefined) {
     const refs = row.recordings.length ? dedupeTelephonyRecordingRefs(row.recordings) : null;
-    patch.telephonyRecordingRefs = refs;
-    patch.telephonyRecordingId = refs?.[0]?.id ?? null;
-    patch.telephonyRecordingContentUri = refs?.[0]?.contentUri ?? null;
+    const mergedRefs = mergeTelephonyRecordingRefs(existing.telephonyRecordingRefs, refs);
+    patch.telephonyRecordingRefs = mergedRefs;
+    patch.telephonyRecordingId = mergedRefs?.[0]?.id ?? null;
+    patch.telephonyRecordingContentUri = mergedRefs?.[0]?.contentUri ?? null;
   } else if (row.recording) {
     const one = dedupeTelephonyRecordingRefs([row.recording]);
-    patch.telephonyRecordingRefs = one;
-    patch.telephonyRecordingId = one[0]?.id ?? null;
-    patch.telephonyRecordingContentUri = one[0]?.contentUri ?? null;
+    const mergedRefs = mergeTelephonyRecordingRefs(existing.telephonyRecordingRefs, one);
+    patch.telephonyRecordingRefs = mergedRefs;
+    patch.telephonyRecordingId = mergedRefs?.[0]?.id ?? null;
+    patch.telephonyRecordingContentUri = mergedRefs?.[0]?.contentUri ?? null;
   }
   if (!(existing as { telephonyDraft?: boolean }).telephonyDraft) {
     patch.telephonyCallbackPending = false;
