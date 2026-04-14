@@ -332,7 +332,7 @@ function CallLogEditForm({
                     Part {i + 1} of {snapshot.telephonyRecordingSegmentCount}
                   </p>
                 ) : null}
-                <CallLogRecordingPlayback callLogId={snapshot.id} recordingIndex={i} compact />
+                <CallLogRecordingPlayback callLogId={snapshot.id} recordingIndex={i} />
               </div>
             ),
           )}

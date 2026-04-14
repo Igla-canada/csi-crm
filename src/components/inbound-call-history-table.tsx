@@ -18,7 +18,7 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CallHistoryOpenLogButton } from "@/components/call-history-open-log-button";
-import { CallLogRecordingPlayback } from "@/components/call-log-recording-playback";
+import { CallLogRecordingPlayButton } from "@/components/call-log-recording-playback";
 import { useLiveUiSync } from "@/components/live-ui-sync";
 import { INBOUND_CALL_HISTORY_REFRESH_EVENT } from "@/lib/call-history-refresh-event";
 import type { InboundCallHistoryRowDto } from "@/lib/inbound-call-history-dto";
@@ -306,15 +306,21 @@ function InboundHistoryRecordingCell({
   const { title } = recordingLabel(n);
 
   return (
-    <div className="flex flex-col items-stretch gap-2" title={title}>
-      {Array.from({ length: n }, (_, segmentIndex) => (
-        <div key={segmentIndex} className="flex flex-col gap-1">
-          {n > 1 ? (
-            <span className="text-[10px] font-semibold tabular-nums text-slate-500">Part {segmentIndex + 1}</span>
-          ) : null}
-          <CallLogRecordingPlayback callLogId={callLogId} recordingIndex={segmentIndex} compact />
-        </div>
-      ))}
+    <div className="flex flex-col items-center gap-1" title={title}>
+      <div className="flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5">
+        {Array.from({ length: n }, (_, segmentIndex) => (
+          <span key={segmentIndex} className="inline-flex items-center gap-0.5">
+            {n > 1 && (
+              <span className="text-[10px] font-semibold tabular-nums text-slate-500">{segmentIndex + 1}</span>
+            )}
+            <CallLogRecordingPlayButton
+              callLogId={callLogId}
+              recordingIndex={segmentIndex}
+              totalSegments={n}
+            />
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
