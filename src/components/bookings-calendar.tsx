@@ -109,6 +109,7 @@ type GoogleEventDTO = {
   end: string;
   allDay: boolean;
   htmlLink?: string;
+  colorId?: string | null;
 };
 
 type CalendarSaveBanner =
@@ -307,10 +308,51 @@ type GoogleEvDragState = {
   ghostWidth: number;
 };
 
-const GOOGLE_BLOCK_STYLE: CSSProperties = {
-  backgroundColor: "rgba(230, 244, 234, 0.98)",
-  borderColor: "#ceead6",
+type GoogleEventPalette = {
+  bg: string;
+  border: string;
+  text: string;
+  buttonBg: string;
+  buttonHover: string;
+  buttonText: string;
 };
+
+const DEFAULT_GOOGLE_EVENT_PALETTE: GoogleEventPalette = {
+  bg: "rgba(230, 244, 234, 0.98)",
+  border: "#ceead6",
+  text: "#137333",
+  buttonBg: "#137333",
+  buttonHover: "#0d652b",
+  buttonText: "#ffffff",
+};
+
+const GOOGLE_EVENT_PALETTE_BY_ID: Record<string, GoogleEventPalette> = {
+  "1": { bg: "#e8eefc", border: "#c6d3f8", text: "#334ea3", buttonBg: "#334ea3", buttonHover: "#263b7d", buttonText: "#ffffff" },
+  "2": { bg: "#e6f4ea", border: "#ceead6", text: "#137333", buttonBg: "#137333", buttonHover: "#0d652b", buttonText: "#ffffff" },
+  "3": { bg: "#f3e8fd", border: "#e2c9fb", text: "#6a1b9a", buttonBg: "#7e57c2", buttonHover: "#5e35b1", buttonText: "#ffffff" },
+  "4": { bg: "#fce8e6", border: "#f6c7c3", text: "#a50e0e", buttonBg: "#d93025", buttonHover: "#b3261e", buttonText: "#ffffff" },
+  "5": { bg: "#fef7e0", border: "#f9de97", text: "#7a4e00", buttonBg: "#f9ab00", buttonHover: "#f29900", buttonText: "#202124" },
+  "6": { bg: "#fff1e6", border: "#ffd0ad", text: "#8d4b00", buttonBg: "#f2994a", buttonHover: "#e5832e", buttonText: "#202124" },
+  "7": { bg: "#e0f7fa", border: "#b5e9ef", text: "#0b7285", buttonBg: "#0b7285", buttonHover: "#085c6a", buttonText: "#ffffff" },
+  "8": { bg: "#f1f3f4", border: "#dadce0", text: "#3c4043", buttonBg: "#5f6368", buttonHover: "#3c4043", buttonText: "#ffffff" },
+  "9": { bg: "#e8f0fe", border: "#c6dafc", text: "#174ea6", buttonBg: "#1a73e8", buttonHover: "#1765cc", buttonText: "#ffffff" },
+  "10": { bg: "#e6f4ea", border: "#b7dfba", text: "#0b8043", buttonBg: "#0b8043", buttonHover: "#066837", buttonText: "#ffffff" },
+  "11": { bg: "#fce8e6", border: "#f4b7b0", text: "#c5221f", buttonBg: "#c5221f", buttonHover: "#a50e0e", buttonText: "#ffffff" },
+};
+
+function googleEventPalette(colorId: string | null | undefined): GoogleEventPalette {
+  const key = String(colorId ?? "").trim();
+  if (!key) return DEFAULT_GOOGLE_EVENT_PALETTE;
+  return GOOGLE_EVENT_PALETTE_BY_ID[key] ?? DEFAULT_GOOGLE_EVENT_PALETTE;
+}
+
+function googleEventBlockStyle(colorId: string | null | undefined): CSSProperties {
+  const palette = googleEventPalette(colorId);
+  return {
+    backgroundColor: palette.bg,
+    borderColor: palette.border,
+  };
+}
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -884,6 +926,8 @@ function DayTimeColumn({
         const end = new Date(e.end);
         const layout = layoutTimedBlock(day, start, end);
         if (!layout) return null;
+        const palette = googleEventPalette(e.colorId);
+        const blockStyle = googleEventBlockStyle(e.colorId);
         const durationMins = Math.max(15, differenceInMinutes(end, start));
         const draggingGoogle = googleDrag?.ev.id === e.id;
         return (
@@ -984,10 +1028,11 @@ function DayTimeColumn({
               onGoogleOpen(e, ev.clientX, ev.clientY);
             }}
             className={cn(
-              "absolute left-0.5 right-0.5 overflow-hidden rounded border border-[#ceead6] bg-[#e6f4ea]/95 px-1 py-0.5 text-left shadow-sm hover:z-20",
+              "absolute left-0.5 right-0.5 overflow-hidden rounded border px-1 py-0.5 text-left shadow-sm hover:z-20",
               googleReschedulable && "cursor-grab touch-none active:cursor-grabbing",
             )}
             style={{
+              ...blockStyle,
               top: layout.top,
               height: layout.height,
               zIndex: draggingGoogle ? 8 : 9,
@@ -1000,8 +1045,12 @@ function DayTimeColumn({
                 : e.summary
             }
           >
-            <p className="truncate text-[11px] font-semibold leading-tight text-[#137333]">{e.summary}</p>
-            <p className="truncate text-[9px] text-[#137333]/80">Google Calendar</p>
+            <p className="truncate text-[11px] font-semibold leading-tight" style={{ color: palette.text }}>
+              {e.summary}
+            </p>
+            <p className="truncate text-[9px]" style={{ color: palette.text, opacity: 0.85 }}>
+              Google Calendar
+            </p>
           </button>
         );
       })}
@@ -1010,7 +1059,7 @@ function DayTimeColumn({
         <div
           className="pointer-events-none fixed z-[40] overflow-hidden rounded border-2 border-[#1a73e8] px-1 py-0.5 shadow-lg"
           style={{
-            ...GOOGLE_BLOCK_STYLE,
+            ...googleEventBlockStyle(googleDrag.ev.colorId),
             top: googleDrag.ghostTop,
             left: googleDrag.ghostLeft,
             width: googleDrag.ghostWidth,
@@ -1018,7 +1067,12 @@ function DayTimeColumn({
           }}
           aria-hidden
         >
-          <p className="truncate text-[11px] font-semibold leading-tight text-[#137333]">{googleDrag.ev.summary}</p>
+          <p
+            className="truncate text-[11px] font-semibold leading-tight"
+            style={{ color: googleEventPalette(googleDrag.ev.colorId).text }}
+          >
+            {googleDrag.ev.summary}
+          </p>
           <p className="truncate text-[10px] text-[#3c4043]">Google Calendar</p>
           <p className="truncate text-[9px] font-medium text-[#1967d2]">Moving…</p>
         </div>
@@ -1111,6 +1165,7 @@ function MonthCell({
     });
   }
   for (const e of gAll.slice(0, 2)) {
+    const palette = googleEventPalette(e.colorId);
     lines.push({
       key: `ga-${e.id}`,
       el: (
@@ -1118,7 +1173,8 @@ function MonthCell({
           href={e.htmlLink || "#"}
           target="_blank"
           rel="noreferrer"
-          className="block truncate rounded-sm border border-[#ceead6] bg-[#e6f4ea] px-1 py-0.5 text-[10px] font-medium text-[#137333]"
+          className="block truncate rounded-sm border px-1 py-0.5 text-[10px] font-medium"
+          style={{ borderColor: palette.border, backgroundColor: palette.bg, color: palette.text }}
         >
           {e.summary}
         </a>
@@ -1126,6 +1182,7 @@ function MonthCell({
     });
   }
   for (const e of gTimed.slice(0, 3)) {
+    const palette = googleEventPalette(e.colorId);
     const gDrag = bindMonthGoogleTimed?.(e, day);
     const gDraggingThis = monthGoogleDraggingId === e.id;
     lines.push({
@@ -1134,8 +1191,11 @@ function MonthCell({
         <button
           type="button"
           title={`${e.summary} — drag to another day (time unchanged); click for details`}
-          className="block w-full cursor-grab truncate rounded-sm border border-[#ceead6] bg-[#e6f4ea] px-1 py-0.5 text-left text-[10px] font-medium text-[#137333] active:cursor-grabbing touch-none"
+          className="block w-full cursor-grab truncate rounded-sm border px-1 py-0.5 text-left text-[10px] font-medium active:cursor-grabbing touch-none"
           style={{
+            borderColor: palette.border,
+            backgroundColor: palette.bg,
+            color: palette.text,
             opacity: gDraggingThis ? 0 : 1,
             pointerEvents: gDraggingThis ? "none" : undefined,
           }}
@@ -1148,12 +1208,16 @@ function MonthCell({
           href={e.htmlLink}
           target="_blank"
           rel="noreferrer"
-          className="block truncate rounded-sm border border-[#ceead6] bg-[#e6f4ea] px-1 py-0.5 text-[10px] font-medium text-[#137333]"
+          className="block truncate rounded-sm border px-1 py-0.5 text-[10px] font-medium"
+          style={{ borderColor: palette.border, backgroundColor: palette.bg, color: palette.text }}
         >
           {format(new Date(e.start), "h:mm a")} {e.summary}
         </a>
       ) : (
-        <span className="block truncate rounded-sm border border-[#ceead6] bg-[#e6f4ea] px-1 py-0.5 text-[10px] font-medium text-[#137333]">
+        <span
+          className="block truncate rounded-sm border px-1 py-0.5 text-[10px] font-medium"
+          style={{ borderColor: palette.border, backgroundColor: palette.bg, color: palette.text }}
+        >
           {format(new Date(e.start), "h:mm a")} {e.summary}
         </span>
       ),
@@ -1887,7 +1951,7 @@ export function BookingsCalendar({
                 whole days (clock time stays the same).
               </>
             ) : null}{" "}
-            CRM bookings sync to Google when connected; Google-only events appear on the grid in green.
+            CRM bookings sync to Google when connected; Google-only events use their Google Calendar colors.
           </p>
         ) : (
           <p className="px-1 text-xs text-[#70757a]">Your role can view the schedule here; create bookings from an account with booking permission.</p>
@@ -1903,15 +1967,21 @@ export function BookingsCalendar({
           <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-[#70757a]">All day (Google)</p>
           <div className="flex flex-wrap gap-2">
             {allDayGoogle.map((e) => (
+              (() => {
+                const palette = googleEventPalette(e.colorId);
+                return (
               <a
                 key={e.id}
                 href={e.htmlLink || "#"}
                 target="_blank"
                 rel="noreferrer"
-                className="max-w-full truncate rounded border border-[#ceead6] bg-[#e6f4ea] px-2 py-1 text-xs font-medium text-[#137333]"
+                className="max-w-full truncate rounded border px-2 py-1 text-xs font-medium"
+                style={{ borderColor: palette.border, backgroundColor: palette.bg, color: palette.text }}
               >
                 {e.summary}
               </a>
+                );
+              })()
             ))}
           </div>
         </div>
@@ -2161,7 +2231,9 @@ export function BookingsCalendar({
               </>
             ) : (
               <>
-                <p className="text-sm font-semibold text-[#137333]">{detail.ev.summary}</p>
+                <p className="text-sm font-semibold" style={{ color: googleEventPalette(detail.ev.colorId).text }}>
+                  {detail.ev.summary}
+                </p>
                 <p className="mt-1 text-xs text-[#5f6368]">
                   {format(new Date(detail.ev.start), "EEE MMM d · h:mm a")} –{" "}
                   {format(new Date(detail.ev.end), "h:mm a")}
@@ -2169,15 +2241,27 @@ export function BookingsCalendar({
                 <p className="mt-1 text-xs text-[#70757a]">Google Calendar</p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {detail.ev.htmlLink ? (
+                    (() => {
+                      const palette = googleEventPalette(detail.ev.colorId);
+                      return (
                     <a
                       href={detail.ev.htmlLink}
                       target="_blank"
                       rel="noreferrer"
-                      className="rounded-lg bg-[#137333] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0d652b]"
+                      className="rounded-lg px-3 py-1.5 text-xs font-semibold"
+                      style={{ backgroundColor: palette.buttonBg, color: palette.buttonText }}
+                      onMouseEnter={(ev) => {
+                        ev.currentTarget.style.backgroundColor = palette.buttonHover;
+                      }}
+                      onMouseLeave={(ev) => {
+                        ev.currentTarget.style.backgroundColor = palette.buttonBg;
+                      }}
                       onClick={() => setDetail(null)}
                     >
                       Open in Google
                     </a>
+                      );
+                    })()
                   ) : null}
                   <button
                     type="button"
@@ -2219,7 +2303,7 @@ export function BookingsCalendar({
         <div
           className="pointer-events-none fixed z-[40] overflow-hidden rounded border-2 border-[#1a73e8] px-1 py-0.5 shadow-lg"
           style={{
-            ...GOOGLE_BLOCK_STYLE,
+            ...googleEventBlockStyle(monthGoogleDrag.ev.colorId),
             top: monthGoogleDrag.ghostTop,
             left: monthGoogleDrag.ghostLeft,
             width: monthGoogleDrag.ghostWidth,
@@ -2227,7 +2311,10 @@ export function BookingsCalendar({
           }}
           aria-hidden
         >
-          <p className="truncate text-[11px] font-semibold leading-tight text-[#137333]">
+          <p
+            className="truncate text-[11px] font-semibold leading-tight"
+            style={{ color: googleEventPalette(monthGoogleDrag.ev.colorId).text }}
+          >
             {monthGoogleDrag.ev.summary}
           </p>
           <p className="truncate text-[10px] text-[#3c4043]">Google Calendar</p>

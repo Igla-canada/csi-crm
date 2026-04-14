@@ -14,6 +14,7 @@ export type ListedGoogleEvent = {
   end: string;
   allDay: boolean;
   htmlLink?: string;
+  colorId?: string;
 };
 
 export type GoogleCalendarEventWriteInput = {
@@ -80,6 +81,7 @@ export async function listCalendarEventsWithRefreshToken(
       end: bounds.end.toISOString(),
       allDay: bounds.allDay,
       htmlLink: e.htmlLink ?? undefined,
+      colorId: e.colorId?.trim() || undefined,
     });
   }
   return out;

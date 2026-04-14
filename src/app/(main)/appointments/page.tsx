@@ -90,7 +90,7 @@ export default async function AppointmentsPage() {
       <SectionHeading
         eyebrow="Bookings"
         title="Day, week, and month — CRM + your Google Calendar"
-        text="Switch views with Day / Week / Month. Day and week show a full 24-hour grid (scroll for overnight slots). Book like Google Calendar: click or drag on the time grid, then confirm details. CRM blocks use each booking type’s color from Workspace → Booking types; Google events stay green. Slot load uses the max parallel setting below."
+        text="Switch views with Day / Week / Month. Day and week show a full 24-hour grid (scroll for overnight slots). Book like Google Calendar: click or drag on the time grid, then confirm details. CRM blocks use each booking type’s color from Workspace → Booking types; Google-only events keep their Google Calendar colors. Slot load uses the max parallel setting below."
         aside={
           <div className="crm-badge">
             Max parallel bookings: {config?.maxParallelBookings ?? 0}

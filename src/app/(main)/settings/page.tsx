@@ -214,7 +214,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             <h3 className="text-xl font-semibold text-slate-900">Booking types</h3>
             <p className="mt-2 text-sm leading-6 text-slate-600">
               Types appear in the Add booking dialog on the Bookings calendar. Each type has a color used for CRM event
-              blocks (Google events stay green). Rename, recolor, hide from new bookings, or add custom types; unused
+              blocks (Google events keep their Google Calendar colors). Rename, recolor, hide from new bookings, or add custom types; unused
               custom types can be removed.
             </p>
             <div className="mt-6">
