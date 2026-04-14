@@ -1089,6 +1089,62 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
   const want = sessionId.trim();
   if (!want) return [];
   const matchedById = new Map<string, RcCallRecord>();
+  const baseQuery: Record<string, string | number> = {
+    dateFrom: dateFrom.toISOString(),
+    dateTo: dateTo.toISOString(),
+    perPage: 250,
+    type: "Voice",
+    view: "Detailed",
+  };
+  if (directionFilter) baseQuery.direction = directionFilter;
+
+  /**
+   * Fast path: ask RingCentral to filter by session hint directly.
+   * This avoids missing recent rows when account paging is large and usually returns complete legs/recordings.
+   */
+  for (const key of ["sessionId", "telephonySessionId"] as const) {
+    const q: Record<string, string | number> = { ...baseQuery, [key]: want, page: 1 };
+    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", q);
+    if (!resp.ok) continue;
+    let body: RcCallLogListResponse | null = null;
+    try {
+      body = (await resp.json()) as RcCallLogListResponse;
+    } catch {
+      body = null;
+    }
+    for (const rec of body?.records ?? []) {
+      if (!recordMatchesTelephonySession(rec, want)) continue;
+      const rid = String(rec.id ?? "").trim();
+      if (rid) matchedById.set(rid, rec);
+    }
+    if (matchedById.size > 0) {
+      const totalPages = Math.min(Math.max(body?.paging?.totalPages ?? 1, 1), 4);
+      for (let page = 2; page <= totalPages; page++) {
+        const pResp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", { ...q, page });
+        if (!pResp.ok) break;
+        let pBody: RcCallLogListResponse | null = null;
+        try {
+          pBody = (await pResp.json()) as RcCallLogListResponse;
+        } catch {
+          break;
+        }
+        for (const rec of pBody?.records ?? []) {
+          if (!recordMatchesTelephonySession(rec, want)) continue;
+          const rid = String(rec.id ?? "").trim();
+          if (rid) matchedById.set(rid, rec);
+        }
+      }
+      break;
+    }
+  }
+
+  if (matchedById.size > 0) {
+    return [...matchedById.values()].sort((a, b) => {
+      const ta = a.startTime ? new Date(a.startTime).getTime() : 0;
+      const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
+      return ta - tb;
+    });
+  }
 
   for (let page = 1; page <= maxPages; page++) {
     const query: Record<string, string | number> = {
