@@ -328,7 +328,7 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
     }
 
     pollChainCancelRef.current = false;
-    const baseMs = Math.max(activeCallPollSec * 1000, 30_000);
+    const baseMs = Math.max(activeCallPollSec * 1000, 8_000);
 
     const scheduleNext = (delayMs: number) => {
       if (pollChainCancelRef.current) return;

@@ -16,16 +16,28 @@ export type TelephonyLiveSessionRow = {
   endingToken?: string | null;
 };
 
-const TTL_MS = 45 * 60 * 1000;
+/** Active rows should refresh often from webhook/poll; stale rows should disappear quickly from dock UI. */
+const ACTIVE_ROW_TTL_MS = 12 * 60 * 1000;
+/** If deferred finalize fails, never keep a "Finishing call" row around for long. */
+const FINISHING_ROW_EXPIRED_GRACE_MS = 2 * 60 * 1000;
 
 function sb() {
   return getSupabaseAdmin();
 }
 
 export async function purgeStaleTelephonyLiveSessions(): Promise<void> {
-  const cutoff = new Date(Date.now() - TTL_MS).toISOString();
-  const { error } = await sb().from(tables.TelephonyLiveSession).delete().lt("updatedAt", cutoff);
-  if (error) throw error;
+  const staleCutoff = new Date(Date.now() - ACTIVE_ROW_TTL_MS).toISOString();
+  const finishingCutoff = new Date(Date.now() - FINISHING_ROW_EXPIRED_GRACE_MS).toISOString();
+  const [stale, finishing] = await Promise.all([
+    sb().from(tables.TelephonyLiveSession).delete().lt("updatedAt", staleCutoff),
+    sb()
+      .from(tables.TelephonyLiveSession)
+      .delete()
+      .not("endingGraceUntil", "is", null)
+      .lt("endingGraceUntil", finishingCutoff),
+  ]);
+  if (stale.error) throw stale.error;
+  if (finishing.error) throw finishing.error;
 }
 
 export async function upsertTelephonyLiveSession(

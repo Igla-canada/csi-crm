@@ -1089,6 +1089,10 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
   const want = sessionId.trim();
   if (!want) return [];
   const matchedById = new Map<string, RcCallRecord>();
+  const sessionLookupPaths = [
+    "/restapi/v1.0/account/~/call-log",
+    "/restapi/v1.0/account/~/extension/~/call-log",
+  ] as const;
   const baseQuery: Record<string, string | number> = {
     dateFrom: dateFrom.toISOString(),
     dateTo: dateTo.toISOString(),
@@ -1102,40 +1106,43 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
    * Fast path: ask RingCentral to filter by session hint directly.
    * This avoids missing recent rows when account paging is large and usually returns complete legs/recordings.
    */
-  for (const key of ["sessionId", "telephonySessionId"] as const) {
-    const q: Record<string, string | number> = { ...baseQuery, [key]: want, page: 1 };
-    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", q);
-    if (!resp.ok) continue;
-    let body: RcCallLogListResponse | null = null;
-    try {
-      body = (await resp.json()) as RcCallLogListResponse;
-    } catch {
-      body = null;
-    }
-    for (const rec of body?.records ?? []) {
-      if (!recordMatchesTelephonySession(rec, want)) continue;
-      const rid = String(rec.id ?? "").trim();
-      if (rid) matchedById.set(rid, rec);
-    }
-    if (matchedById.size > 0) {
-      const totalPages = Math.min(Math.max(body?.paging?.totalPages ?? 1, 1), 4);
-      for (let page = 2; page <= totalPages; page++) {
-        const pResp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", { ...q, page });
-        if (!pResp.ok) break;
-        let pBody: RcCallLogListResponse | null = null;
-        try {
-          pBody = (await pResp.json()) as RcCallLogListResponse;
-        } catch {
-          break;
-        }
-        for (const rec of pBody?.records ?? []) {
-          if (!recordMatchesTelephonySession(rec, want)) continue;
-          const rid = String(rec.id ?? "").trim();
-          if (rid) matchedById.set(rid, rec);
-        }
+  for (const path of sessionLookupPaths) {
+    for (const key of ["sessionId", "telephonySessionId"] as const) {
+      const q: Record<string, string | number> = { ...baseQuery, [key]: want, page: 1 };
+      const resp = await rcSyncGet(platform, path, q);
+      if (!resp.ok) continue;
+      let body: RcCallLogListResponse | null = null;
+      try {
+        body = (await resp.json()) as RcCallLogListResponse;
+      } catch {
+        body = null;
       }
-      break;
+      for (const rec of body?.records ?? []) {
+        if (!recordMatchesTelephonySession(rec, want)) continue;
+        const rid = String(rec.id ?? "").trim();
+        if (rid) matchedById.set(rid, rec);
+      }
+      if (matchedById.size > 0) {
+        const totalPages = Math.min(Math.max(body?.paging?.totalPages ?? 1, 1), 4);
+        for (let page = 2; page <= totalPages; page++) {
+          const pResp = await rcSyncGet(platform, path, { ...q, page });
+          if (!pResp.ok) break;
+          let pBody: RcCallLogListResponse | null = null;
+          try {
+            pBody = (await pResp.json()) as RcCallLogListResponse;
+          } catch {
+            break;
+          }
+          for (const rec of pBody?.records ?? []) {
+            if (!recordMatchesTelephonySession(rec, want)) continue;
+            const rid = String(rec.id ?? "").trim();
+            if (rid) matchedById.set(rid, rec);
+          }
+        }
+        break;
+      }
     }
+    if (matchedById.size > 0) break;
   }
 
   if (matchedById.size > 0) {
