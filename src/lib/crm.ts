@@ -2415,23 +2415,23 @@ function telephonyDurationSecondsFromMetadata(meta: unknown): number | null {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   const o = meta as Record<string, unknown>;
   const top = o.duration;
-  if (typeof top === "number" && Number.isFinite(top) && top >= 0) {
-    return Math.min(Math.round(top), 86400);
-  }
-  if (typeof top === "string" && /^\d+$/.test(top.trim())) {
-    return Math.min(parseInt(top.trim(), 10), 86400);
-  }
-  const legs = o.legs;
-  if (!Array.isArray(legs)) return null;
-  let maxLeg = 0;
-  for (const leg of legs) {
-    if (!leg || typeof leg !== "object" || Array.isArray(leg)) continue;
-    const d = (leg as Record<string, unknown>).duration;
-    if (typeof d === "number" && Number.isFinite(d) && d >= 0) {
-      maxLeg = Math.max(maxLeg, Math.round(d));
+  const toSecs = (v: unknown): number => {
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return Math.min(Math.round(v), 86400);
+    if (typeof v === "string" && /^\d+$/.test(v.trim())) return Math.min(parseInt(v.trim(), 10), 86400);
+    return 0;
+  };
+  let max = toSecs(top);
+  const walkLegs = (legs: unknown): void => {
+    if (!Array.isArray(legs)) return;
+    for (const leg of legs) {
+      if (!leg || typeof leg !== "object" || Array.isArray(leg)) continue;
+      const L = leg as Record<string, unknown>;
+      max = Math.max(max, toSecs(L.duration));
+      walkLegs(L.legs);
     }
-  }
-  return maxLeg > 0 ? Math.min(maxLeg, 86400) : null;
+  };
+  walkLegs(o.legs);
+  return max > 0 ? max : null;
 }
 
 function inboundHistoryRecordingCountFromRow(row: Record<string, unknown>): number {

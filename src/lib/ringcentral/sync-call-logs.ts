@@ -1027,10 +1027,8 @@ export async function syncRingCentralVoiceCallLogsFromApi(
 function recordMatchesTelephonySession(rec: RcCallRecord, telephonySessionId: string): boolean {
   const want = telephonySessionId.trim();
   if (!want) return false;
-  const ts = String(rec.telephonySessionId ?? "").trim();
-  if (ts && ts === want) return true;
-  const sid = String(rec.sessionId ?? "").trim();
-  return Boolean(sid && sid === want);
+  const hints = collectSessionHintsFromRcRecords(rec);
+  return hints.includes(want);
 }
 
 /**
@@ -1211,14 +1209,48 @@ async function expandRcSessionRecordGraph(
 }
 
 /** Numeric `sessionId` and `telephonySessionId` (`s-…`) can both appear; union lookups so sibling rows are not missed. */
+const RC_SESSION_HINT_SCAN_MAX_NODES = 320;
+const RC_SESSION_HINT_KEYS = new Set([
+  "sessionId",
+  "telephonySessionId",
+  "linkedSessionId",
+  "peerSessionId",
+]);
+
+function collectSessionHintsFromUnknown(root: unknown): string[] {
+  const hints = new Set<string>();
+  const queue: unknown[] = [root];
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  while (queue.length > 0 && nodes < RC_SESSION_HINT_SCAN_MAX_NODES) {
+    const cur = queue.shift();
+    nodes += 1;
+    if (cur == null || typeof cur !== "object") continue;
+    if (seen.has(cur as object)) continue;
+    seen.add(cur as object);
+    if (Array.isArray(cur)) {
+      for (const item of cur) queue.push(item);
+      continue;
+    }
+    const obj = cur as Record<string, unknown>;
+    for (const [k, v] of Object.entries(obj)) {
+      if (RC_SESSION_HINT_KEYS.has(k)) {
+        const s = String(v ?? "").trim();
+        if (s) hints.add(s);
+      }
+      if (v && typeof v === "object") queue.push(v);
+    }
+  }
+  return [...hints];
+}
+
 function collectSessionHintsFromRcRecords(...parts: (RcCallRecord | null | undefined)[]): string[] {
   const hints = new Set<string>();
   for (const rec of parts) {
     if (!rec) continue;
-    const a = String(rec.telephonySessionId ?? "").trim();
-    const b = String(rec.sessionId ?? "").trim();
-    if (a) hints.add(a);
-    if (b) hints.add(b);
+    for (const h of collectSessionHintsFromUnknown(rec)) {
+      hints.add(h);
+    }
   }
   return [...hints];
 }
@@ -1596,6 +1628,17 @@ function scoreRcRowForTelephonyPrimary(r: RcCallRecord, stubDigitsNorm: string):
   if (d.includes("inbound")) s += 50;
   const phone = pickCustomerPhoneForImport(r);
   if (stubDigitsNorm.length >= MIN_DIGITS_LOOKUP && phone.digits === stubDigitsNorm) s += 40;
+  const dur = maxDurationSecondsFromRcRecordTree(r);
+  s += Math.min(dur, 600);
+  const resRaw = topLevelResultRaw(r);
+  const res = resRaw.toLowerCase().replace(/_/g, " ");
+  if (ringCentralResultLooksAnsweredConnectedRaw(resRaw)) s += 220;
+  if (res.includes("call connected")) s += 120;
+  if (res.includes("accepted")) s += 80;
+  if ((res.includes("stopped") || res.includes("missed")) && dur <= 12) s -= 260;
+  if ((res.includes("no answer") || res.includes("noanswer")) && dur <= 12) s -= 220;
+  const action = topLevelActionRaw(r).toLowerCase();
+  if ((action.includes("findme") || action.includes("park")) && dur <= 15) s -= 100;
   return s;
 }
 
