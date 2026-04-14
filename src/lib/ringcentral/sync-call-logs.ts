@@ -21,7 +21,10 @@ import { CallDirection, getSupabaseAdmin, tables } from "@/lib/db";
 import { getRingCentralAutoTranscribe, getRingCentralEnv } from "@/lib/ringcentral/env";
 import { recordingPathFromStoredRef, stableRecordingIdForPath } from "@/lib/ringcentral/recording-content-path";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
-import { dispositionFromRingCentralRecordWithSessionContext } from "@/lib/ringcentral/call-result";
+import {
+  dispositionFromRingCentralRecordWithSessionContext,
+  ringCentralResultLooksAnsweredConnectedRaw,
+} from "@/lib/ringcentral/call-result";
 import {
   shouldStartAutoTranscriptionForCallLog,
   startRingCentralSpeechToTextForCallLog,
@@ -278,9 +281,17 @@ function inferCustomerCallDirectionFromRecordLegacy(rec: RcCallRecord, customerD
   return null;
 }
 
+function rcRecordStartTimeMs(r: RcCallRecord): number {
+  const t = r.startTime ? new Date(r.startTime).getTime() : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
 /**
  * Prefer **inbound PSTN-from** on any session fragment before **outbound PSTN-to**, so hunt groups and
  * unconditional forwards (101→202) do not flip the CRM row to outgoing just because the primary RC id is an internal leg.
+ *
+ * Rows are processed **chronologically** so the first PSTN interaction (true customer direction) wins over
+ * later FindMe / park tails that reuse the same session graph.
  */
 function resolveRingCentralCustomerDirection(
   primary: RcCallRecord,
@@ -288,7 +299,9 @@ function resolveRingCentralCustomerDirection(
   contextRecords: RcCallRecord[] | undefined,
 ): CallDirection | null {
   if (customerDigits.length < MIN_DIGITS_LOOKUP) return null;
-  const records = dedupeRcRecordsById([primary, ...(contextRecords ?? [])]);
+  const records = dedupeRcRecordsById([primary, ...(contextRecords ?? [])]).sort(
+    (a, b) => rcRecordStartTimeMs(a) - rcRecordStartTimeMs(b),
+  );
 
   for (const r of records) {
     if (recordHasInboundCustomerOnFrom(r, customerDigits)) return CallDirection.INBOUND;
@@ -434,6 +447,87 @@ function maxDurationSecondsAcrossRcRecords(records: RcCallRecord[]): number {
   return m;
 }
 
+function topLevelResultRaw(rec: RcCallRecord): string {
+  return String((rec as unknown as Record<string, unknown>).result ?? "").trim();
+}
+
+function topLevelActionRaw(rec: RcCallRecord): string {
+  return String((rec as unknown as Record<string, unknown>).action ?? "").trim();
+}
+
+/**
+ * Prefer rows that carry the real customer conversation + recording (VoIP / connected), and demote
+ * trailing FindMe / "Stopped" legs (often ~5s, no recording) that TELUS still emits as separate call-log ids.
+ */
+function recordingSourceRowScore(
+  row: RcCallRecord,
+  customerDigits: string,
+  sessionHasSubstantiveLeg: boolean,
+): number {
+  const dur = maxDurationSecondsFromRcRecordTree(row);
+  let s = dur;
+  const resRaw = topLevelResultRaw(row);
+  const res = resRaw.toLowerCase().replace(/_/g, " ");
+  if (customerDigits.length >= MIN_DIGITS_LOOKUP && recordHasInboundCustomerOnFrom(row, customerDigits)) {
+    s += 50_000;
+  }
+  if (ringCentralResultLooksAnsweredConnectedRaw(resRaw)) {
+    s += 25_000;
+  }
+  if (/\bcall completed\b/.test(res)) {
+    s += 8_000;
+  }
+  const action = topLevelActionRaw(row).toLowerCase();
+  if (action.includes("voip")) {
+    s += 12_000;
+  }
+  const stoppedish =
+    res.includes("stopped") || res.includes("canceled") || res.includes("cancelled");
+  if (stoppedish && dur <= 12 && sessionHasSubstantiveLeg) {
+    s -= 60_000;
+  }
+  if (res.includes("missed") && dur <= 5 && sessionHasSubstantiveLeg) {
+    s -= 40_000;
+  }
+  return s;
+}
+
+/**
+ * Re-order merged recording refs so the **primary** segment (VoIP / long connected) wins over short tails.
+ * Refs that only appear in `extras` (extension map) keep a neutral score and sort after high-scoring rows.
+ */
+function orderRecordingRefsBySessionRowPreference(
+  customerDigits: string,
+  sessionRows: RcCallRecord[],
+  mergedRefs: RecordingRef[],
+): RecordingRef[] {
+  const uniqRows = dedupeRcRecordsById(sessionRows);
+  const sessionHasSubstantiveLeg = uniqRows.some((r) => maxDurationSecondsFromRcRecordTree(r) >= 25);
+
+  const rowScores = uniqRows.map((row) => ({
+    row,
+    score: recordingSourceRowScore(row, customerDigits, sessionHasSubstantiveLeg),
+  }));
+  rowScores.sort((a, b) => b.score - a.score);
+
+  const out: RecordingRef[] = [];
+  const seen = new Set<string>();
+  for (const { row } of rowScores) {
+    for (const ref of extractAllRecordingsFromRcRecord(row)) {
+      if (seen.has(ref.id)) continue;
+      seen.add(ref.id);
+      out.push(ref);
+    }
+  }
+  for (const ref of mergedRefs) {
+    if (!seen.has(ref.id)) {
+      seen.add(ref.id);
+      out.push(ref);
+    }
+  }
+  return out;
+}
+
 /** Earliest `startTime` across session fragments (internal legs start after the PSTN inbound row). */
 function earliestStartTimeAmongRecords(records: RcCallRecord[]): Date | null {
   let best: number | null = null;
@@ -465,7 +559,8 @@ function toImportedCall(
   if (!start || Number.isNaN(start.getTime())) return null;
 
   const contextDeduped = dedupeRcRecordsById(opts?.directionContextRecords ?? []);
-  const sessionEarliest = earliestStartTimeAmongRecords([rec, ...contextDeduped]);
+  const sessionRows = dedupeRcRecordsById([rec, ...contextDeduped]);
+  const sessionEarliest = earliestStartTimeAmongRecords(sessionRows);
   const happenedAt =
     contextDeduped.length > 0 &&
     sessionEarliest &&
@@ -477,16 +572,21 @@ function toImportedCall(
   // Prefer extras (siblings, extension map, account Detail fetch) over list-row extractions so FindMe/transfer legs
   // with the real recording win when the parent row carries a stale or empty ref (common on TELUS-style logs).
   const merged = mergeRecordingRefsInOrder(extraRecordings, extractAllRecordingsFromRcRecord(rec));
-  const primary = merged[0];
+  const mergedOrdered = orderRecordingRefsBySessionRowPreference(phone.digits, sessionRows, merged);
+  const primary = mergedOrdered[0];
   const metaRaw = rec as unknown as Record<string, unknown>;
-  const peerMetas =
-    opts?.directionContextRecords?.map((r) => r as unknown as Record<string, unknown>) ?? [];
+  const longConv = sessionRows.some((r) => maxDurationSecondsFromRcRecordTree(r) >= 25);
+  const peerRows = contextDeduped
+    .slice()
+    .sort(
+      (a, b) =>
+        recordingSourceRowScore(b, phone.digits, longConv) - recordingSourceRowScore(a, phone.digits, longConv),
+    );
+  const peerMetas = peerRows.map((r) => r as unknown as Record<string, unknown>);
   const disp = dispositionFromRingCentralRecordWithSessionContext(metaRaw, direction, peerMetas);
 
   const metaOut: Record<string, unknown> = { ...metaRaw };
-  const durationAcrossSession = maxDurationSecondsAcrossRcRecords(
-    dedupeRcRecordsById([rec, ...(opts?.directionContextRecords ?? [])]),
-  );
+  const durationAcrossSession = maxDurationSecondsAcrossRcRecords(sessionRows);
   if (durationAcrossSession > 0) {
     const existingTop = numDurationField(metaOut.duration);
     if (durationAcrossSession > existingTop) {
@@ -502,7 +602,7 @@ function toImportedCall(
     contactPhone10: phone.callLog10,
     contactName: sanitizeTelephonyContactName(phone.name),
     recording: primary,
-    recordings: merged.length > 0 ? merged : undefined,
+    recordings: mergedOrdered.length > 0 ? mergedOrdered : undefined,
     metadata: metaOut,
     telephonyResult: disp.resultLabel,
     telephonyCallbackPending: disp.callbackPending,
