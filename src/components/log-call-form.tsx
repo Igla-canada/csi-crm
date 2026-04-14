@@ -70,6 +70,15 @@ export type LiveLogPrefill = {
   clientId?: string;
 } | null;
 
+export type HistoryOrphanLogPrefill = {
+  callLogId: string;
+  phoneDigits: string;
+  contactName: string;
+  direction: CallDirection;
+  /** `datetime-local` string in shop timezone */
+  happenedAtLocal: string;
+};
+
 type LogCallFormProps = {
   defaultHappenedAt: string;
   callResultOptions: CallResultOptionDTO[];
@@ -78,6 +87,8 @@ type LogCallFormProps = {
   defaultOutcomeCode?: string;
   /** From RingCentral live dock URL (`?liveLog=1&…`). */
   liveLogPrefill?: LiveLogPrefill;
+  /** Unassigned telephony row opened from Call history (`?openCallLog=&fromHistory=1`). */
+  historyOrphanPrefill?: HistoryOrphanLogPrefill | null;
   /** Lock client when logging from a client card (phone may not match primary). */
   fixedClientId?: string;
 };
@@ -111,6 +122,7 @@ export function LogCallForm({
   leadSourceOptions,
   defaultOutcomeCode = "FOLLOW_UP",
   liveLogPrefill = null,
+  historyOrphanPrefill = null,
   fixedClientId,
 }: LogCallFormProps) {
   const router = useRouter();
@@ -323,11 +335,15 @@ export function LogCallForm({
   const [lastSavedCallLogId, setLastSavedCallLogId] = useState("");
   const [lastSavedClientId, setLastSavedClientId] = useState("");
   const [lastSavePhoneNorm, setLastSavePhoneNorm] = useState("");
+  const historyOrphanPrefillAppliedRef = useRef("");
+  const [draftOrphanCallLogId, setDraftOrphanCallLogId] = useState("");
+  const [orphanPrefillPhoneNorm, setOrphanPrefillPhoneNorm] = useState("");
 
   const clearDraftCallLog = () => {
     setLastSavedCallLogId("");
     setLastSavedClientId("");
     setLastSavePhoneNorm("");
+    setDraftOrphanCallLogId("");
   };
 
   const selectExisting = (clientId: string) => {
@@ -343,6 +359,31 @@ export function LogCallForm({
     setForceNewClient(true);
     setSelectedClientId("");
   };
+
+  useEffect(() => {
+    if (!historyOrphanPrefill) return;
+    const key = JSON.stringify(historyOrphanPrefill);
+    if (historyOrphanPrefillAppliedRef.current === key) return;
+    historyOrphanPrefillAppliedRef.current = key;
+
+    setDraftOrphanCallLogId(historyOrphanPrefill.callLogId);
+    const d = historyOrphanPrefill.phoneDigits.replace(/\D/g, "").slice(0, CALL_LOG_PHONE_DIGITS);
+    setPhone(d);
+    setOrphanPrefillPhoneNorm(d ? normalizePhone(d) ?? "" : "");
+    setContactName(historyOrphanPrefill.contactName);
+    if (
+      historyOrphanPrefill.direction === CallDirection.INBOUND ||
+      historyOrphanPrefill.direction === CallDirection.OUTBOUND
+    ) {
+      setDirection(historyOrphanPrefill.direction);
+    }
+    setHappenedAt(historyOrphanPrefill.happenedAtLocal);
+    setSelectedClientId("");
+    setForceNewClient(false);
+    setLastSavedCallLogId("");
+    setLastSavedClientId("");
+    setLastSavePhoneNorm("");
+  }, [historyOrphanPrefill]);
 
   const single = matches.length === 1 ? matches[0] : null;
 
@@ -407,6 +448,7 @@ export function LogCallForm({
     setLastSavedCallLogId(formState.callLogId);
     setLastSavedClientId(formState.clientId);
     setLastSavePhoneNorm(normalizePhone(phoneRef.current) ?? "");
+    setDraftOrphanCallLogId("");
   }, [formState]);
 
   useEffect(() => {
@@ -415,6 +457,13 @@ export function LogCallForm({
       setLastSavedCallLogId("");
     }
   }, [phone, lastSavedCallLogId, lastSavePhoneNorm]);
+
+  useEffect(() => {
+    if (!draftOrphanCallLogId || !orphanPrefillPhoneNorm) return;
+    if (normalizePhone(phone) !== orphanPrefillPhoneNorm) {
+      setDraftOrphanCallLogId("");
+    }
+  }, [phone, draftOrphanCallLogId, orphanPrefillPhoneNorm]);
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     const form = e.currentTarget;
@@ -503,7 +552,7 @@ export function LogCallForm({
       ) : null}
 
       <input type="hidden" name="clientId" value={selectedClientId || lastSavedClientId} readOnly />
-      <input type="hidden" name="callLogId" value={lastSavedCallLogId} readOnly />
+      <input type="hidden" name="callLogId" value={lastSavedCallLogId || draftOrphanCallLogId} readOnly />
       <input type="hidden" name="forceNewClient" value={forceNewClient ? "true" : "false"} readOnly />
       <input type="hidden" name="productQuoteLinesJson" value={JSON.stringify(lines)} readOnly />
 

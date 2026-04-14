@@ -4,6 +4,7 @@ import {
   getAppointmentForEditor,
   getAppointmentFormClients,
   getBookingTypeOptions,
+  getCalendarTagOptions,
   listPaymentEventsForAppointment,
 } from "@/lib/crm";
 import { getAppTimezone } from "@/lib/google-calendar/env";
@@ -22,13 +23,15 @@ export default async function EditAppointmentPage({ params }: Props) {
   if (!caps.canEditAppointments || !apt) {
     notFound();
   }
-  const [clients, bookingTypes, paymentEvents] = await Promise.all([
+  const [clients, bookingTypes, paymentEvents, calendarTags] = await Promise.all([
     getAppointmentFormClients(),
     getBookingTypeOptions(true),
     listPaymentEventsForAppointment(id),
+    getCalendarTagOptions(true),
   ]);
 
   const typeOptions = bookingTypes.map((o) => ({ code: o.code as string, label: String(o.label) }));
+  const calendarTagOptions = calendarTags.map((o) => ({ code: o.code, label: o.label }));
   const linkedClient = clients.find((c) => c.id === apt.clientId);
   const initialClientPhone = linkedClient?.phones[0]?.value ?? "";
 
@@ -41,6 +44,7 @@ export default async function EditAppointmentPage({ params }: Props) {
       initialClientPhone={initialClientPhone}
       clients={clients}
       typeOptions={typeOptions}
+      calendarTagOptions={calendarTagOptions}
       googleConnected={Boolean(user.googleRefreshToken?.trim())}
       calendarOwnerLabel={user.name}
       timeZoneLabel={getAppTimezone()}

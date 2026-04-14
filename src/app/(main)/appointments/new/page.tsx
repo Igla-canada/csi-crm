@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import {
   getAppointmentFormClients,
   getBookingTypeOptions,
+  getCalendarTagOptions,
   getProductServiceOptions,
   getUserCapabilities,
 } from "@/lib/crm";
@@ -17,10 +18,11 @@ export default async function NewAppointmentPage({ searchParams }: Props) {
   const sp = (await searchParams) ?? {};
   const user = await getCurrentUser();
   const caps = getUserCapabilities(user);
-  const [clients, bookingTypes, productRows] = await Promise.all([
+  const [clients, bookingTypes, productRows, calendarTags] = await Promise.all([
     getAppointmentFormClients(),
     getBookingTypeOptions(true),
     getProductServiceOptions(false),
+    getCalendarTagOptions(true),
   ]);
   const productServiceOptions = productRows.map((o) => ({
     code: String(o.code),
@@ -33,6 +35,7 @@ export default async function NewAppointmentPage({ searchParams }: Props) {
   }
 
   const typeOptions = bookingTypes.map((o) => ({ code: o.code as string, label: String(o.label) }));
+  const calendarTagOptions = calendarTags.map((o) => ({ code: o.code, label: o.label }));
 
   let initialStart = new Date();
   let initialEnd = new Date(Date.now() + 60 * 60 * 1000);
@@ -52,6 +55,7 @@ export default async function NewAppointmentPage({ searchParams }: Props) {
       initialEnd={initialEnd}
       clients={clients}
       typeOptions={typeOptions}
+      calendarTagOptions={calendarTagOptions}
       productServiceOptions={productServiceOptions}
       googleConnected={Boolean(user.googleRefreshToken?.trim())}
       calendarOwnerLabel={user.name}

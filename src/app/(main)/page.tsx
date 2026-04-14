@@ -126,7 +126,7 @@ export default async function Home() {
                   <p className="text-sm text-slate-500">{format(call.happenedAt, "h:mm a")}</p>
                 </div>
                 <div>
-                  <p className="font-medium text-slate-900">{call.client.displayName}</p>
+                  <p className="font-medium text-slate-900">{call.client?.displayName ?? "Unassigned"}</p>
                   <p className="mt-1 text-sm leading-6 text-slate-600">{call.summary}</p>
                   <p className="mt-1 text-xs text-slate-500">
                     {[

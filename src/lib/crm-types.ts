@@ -39,6 +39,8 @@ export type AppointmentEditorModel = {
   depositText: string | null;
   /** When set, this booking was created from that call log (traceability). */
   callLogId: string | null;
+  /** Optional tag for CRM + Google Calendar color (`CalendarTagOption`). */
+  calendarTagCode: string | null;
   /** Snapshot of the linked call when `callLogId` is set. */
   linkedCall: { id: string; happenedAt: Date; summary: string } | null;
   client: { id: string; displayName: string };

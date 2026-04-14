@@ -117,7 +117,8 @@ export type CallLogProductLineView = {
 /** CallLog row with relations as consumed by dashboard / client UI. */
 export type CallLogWithRelations = {
   id: string;
-  clientId: string;
+  /** Null until staff saves a call log (telephony orphans). */
+  clientId: string | null;
   userId: string;
   direction: CallDirection;
   outcomeCode: string;
@@ -139,7 +140,7 @@ export type CallLogWithRelations = {
   happenedAt: Date;
   followUpAt: Date | null;
   createdAt: Date;
-  client: { id: string; displayName: string };
+  client: { id: string; displayName: string } | null;
   user: { id: string; name: string; email: string; role: string };
   resultOption: { code: string; label: string; accentKey?: string | null; accentHex?: string | null } | null;
   ringCentralCallLogId: string | null;
@@ -159,6 +160,8 @@ export type CallLogWithRelations = {
   telephonyCallbackPending: boolean;
   /** Set when staff uses Call history → Open log (disables repeat clicks). */
   openedFromCallHistoryAt: Date | null;
+  /** Normalized phone for linking orphan rows to a client. */
+  contactPhoneNormalized?: string | null;
 };
 
 async function fetchUsersByIds(ids: string[]) {
@@ -469,7 +472,7 @@ function dedupeTelephonyRecordingRefs(
 
 async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLogWithRelations[]> {
   if (!rows.length) return [];
-  const clientIds = rows.map((r) => r.clientId as string);
+  const clientIds = [...new Set(rows.map((r) => r.clientId as string | null).filter(Boolean))] as string[];
   const userIds = rows.map((r) => r.userId as string);
   const codes = rows.map((r) => r.outcomeCode as string);
   const [clients, users, options, productLabels, leadSourceRows] = await Promise.all([
@@ -481,10 +484,14 @@ async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLog
   ]);
   const leadLabelByCode = new Map(leadSourceRows.map((r) => [String(r.code), String(r.label)]));
   return rows.map((row) => {
-    const client = clients.get(row.clientId as string);
+    const cid = (row.clientId as string | null) ?? null;
+    const client = cid ? (clients.get(cid) ?? null) : null;
     const user = users.get(row.userId as string);
-    if (!client || !user) {
-      throw new Error("Missing related Client or User for CallLog.");
+    if (cid && !client) {
+      throw new Error("Missing related Client for CallLog.");
+    }
+    if (!user) {
+      throw new Error("Missing related User for CallLog.");
     }
     const base = row as Record<string, unknown>;
     const pcode = (base.product as string | null) ?? null;
@@ -514,7 +521,7 @@ async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLog
     return {
       ...base,
       id: base.id as string,
-      clientId: base.clientId as string,
+      clientId: cid,
       userId: base.userId as string,
       direction: base.direction as CallDirection,
       outcomeCode: base.outcomeCode as string,
@@ -557,6 +564,10 @@ async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLog
       openedFromCallHistoryAt: base.openedFromCallHistoryAt
         ? toDate(base.openedFromCallHistoryAt as string)
         : null,
+      contactPhoneNormalized:
+        "contactPhoneNormalized" in base
+          ? ((base.contactPhoneNormalized as string | null) ?? null)
+          : null,
     };
   });
 }
@@ -650,6 +661,7 @@ export const appointmentSchema = z.object({
   visibility: z.enum(["default", "public", "private", "confidential"]).default("default"),
   depositText: z.string().nullable().optional(),
   callLogId: z.string().nullable().optional(),
+  calendarTagCode: z.string().nullable().optional(),
 });
 
 export const paymentEventCreateSchema = z.object({
@@ -686,6 +698,7 @@ export const updateAppointmentSchema = z.object({
   showAs: z.enum(["busy", "free"]).default("busy"),
   visibility: z.enum(["default", "public", "private", "confidential"]).default("default"),
   depositText: z.string().nullable().optional(),
+  calendarTagCode: z.string().nullable().optional(),
 });
 
 export const importCsvSchema = z.object({
@@ -805,6 +818,7 @@ function openCallTasksCountQuery() {
   return sb()
     .from(tables.CallLog)
     .select("id", { count: "exact", head: true })
+    .not("clientId", "is", null)
     .not("outcomeCode", "eq", "COMPLETED")
     .not("outcomeCode", "eq", "BOOKED")
     .not("outcomeCode", "eq", "NO_SOLUTION")
@@ -832,6 +846,7 @@ export async function getDashboardData() {
     sb()
       .from(tables.CallLog)
       .select("id", { count: "exact", head: true })
+      .not("clientId", "is", null)
       .not("outcomeCode", "eq", "COMPLETED")
       .not("outcomeCode", "eq", "BOOKED")
       .not("outcomeCode", "eq", "NO_SOLUTION")
@@ -1069,18 +1084,21 @@ export async function getTasksQueue(googleUser?: GetTasksQueueGoogleOpts | null)
     sb()
       .from(tables.CallLog)
       .select("*")
+      .not("clientId", "is", null)
       .not("followUpAt", "is", null)
       .order("followUpAt", { ascending: true })
       .limit(250),
     sb()
       .from(tables.CallLog)
       .select("*")
+      .not("clientId", "is", null)
       .in("outcomeCode", ["CALLBACK_NEEDED", "FOLLOW_UP"])
       .order("happenedAt", { ascending: false })
       .limit(250),
     sb()
       .from(tables.CallLog)
       .select("*")
+      .not("clientId", "is", null)
       .eq("telephonyCallbackPending", true)
       .order("happenedAt", { ascending: false })
       .limit(250),
@@ -2278,7 +2296,7 @@ export function isCallHistoryOpenLogDisabled(_row: {
 
 export type InboundCallHistoryRow = {
   id: string;
-  clientId: string;
+  clientId: string | null;
   clientDisplayName: string;
   contactPhone: string | null;
   contactName: string | null;
@@ -2305,6 +2323,8 @@ export type InboundCallHistoryRow = {
   /** RingCentral async speech job queued (webhook pending). */
   rcAiTranscribePending: boolean;
   direction: CallDirection;
+  /** Set when `clientId` is null — same as `contactPhoneNormalized` on the row. */
+  contactPhoneNormalized: string | null;
 };
 
 const INBOUND_CALL_HISTORY_LIMIT = 200;
@@ -2412,7 +2432,7 @@ function inboundHistoryRecordingCountFromRow(row: Record<string, unknown>): numb
 }
 
 const INBOUND_HISTORY_LIST_SELECT_CORE =
-  "id,clientId,direction,contactPhone,contactName,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingContentUri";
+  "id,clientId,direction,contactPhone,contactName,contactPhoneNormalized,happenedAt,telephonyDraft,summary,openedFromCallHistoryAt,ringCentralCallLogId,telephonyResult,telephonyMetadata,telephonyRecordingContentUri";
 
 const INBOUND_HISTORY_LIST_GEMINI_FIELDS =
   ",telephonyTranscript,telephonyAiSummary,telephonyGeminiPending,telephonyAiJobId";
@@ -2454,9 +2474,11 @@ export async function listInboundCallHistory(
   if (res.error) throw res.error;
   const list = (res.data ?? []) as unknown as Array<Record<string, unknown>>;
   if (!list.length) return [];
-  const clientMap = await fetchClientsByIds(list.map((r) => String(r.clientId ?? "")));
+  const clientIds = [...new Set(list.map((r) => r.clientId as string | null).filter(Boolean))] as string[];
+  const clientMap = await fetchClientsByIds(clientIds);
   return list.map((r) => {
-    const c = clientMap.get(String(r.clientId ?? ""));
+    const cid = (r.clientId as string | null) ?? null;
+    const c = cid ? clientMap.get(cid) : undefined;
     const row = r;
     const meta =
       row.telephonyMetadata && typeof row.telephonyMetadata === "object" && !Array.isArray(row.telephonyMetadata)
@@ -2473,10 +2495,12 @@ export async function listInboundCallHistory(
     const dirRaw = String(r.direction ?? "INBOUND").toUpperCase();
     const direction =
       dirRaw === "OUTBOUND" ? CallDirection.OUTBOUND : CallDirection.INBOUND;
+    const phoneNorm =
+      String((r.contactPhoneNormalized as string | null) ?? "").trim() || null;
     return {
       id: String(r.id ?? ""),
-      clientId: String(r.clientId ?? ""),
-      clientDisplayName: c?.displayName ?? "Unknown client",
+      clientId: cid,
+      clientDisplayName: c?.displayName ?? (cid ? "Unknown client" : "Unassigned"),
       contactPhone: (r.contactPhone as string | null) ?? null,
       contactName: (r.contactName as string | null) ?? null,
       happenedAt: toDate(String(r.happenedAt ?? "")),
@@ -2499,12 +2523,15 @@ export async function listInboundCallHistory(
       geminiTranscribePending: Boolean(r.telephonyGeminiPending),
       rcAiTranscribePending: Boolean(String((r.telephonyAiJobId as string | null) ?? "").trim()),
       direction,
+      contactPhoneNormalized: phoneNorm,
     };
   });
 }
 
-/** Marks the call as opened from Call history; idempotent if already marked. Returns client id for redirect. */
-export async function markCallLogOpenedFromCallHistory(callLogId: string): Promise<{ clientId: string }> {
+/** Marks the call as opened from Call history; idempotent if already marked. Returns client id when already linked. */
+export async function markCallLogOpenedFromCallHistory(
+  callLogId: string,
+): Promise<{ clientId: string | null }> {
   const { data: row, error } = await sb()
     .from(tables.CallLog)
     .select(
@@ -2520,7 +2547,7 @@ export async function markCallLogOpenedFromCallHistory(callLogId: string): Promi
   if (dir !== "INBOUND" && dir !== "OUTBOUND") {
     throw new UserInputError("This call can’t be opened from call history.");
   }
-  const clientId = row.clientId as string;
+  const clientId = (row.clientId as string | null) ?? null;
   if (row.openedFromCallHistoryAt) {
     return { clientId };
   }
@@ -2577,6 +2604,62 @@ export async function markInboundTelephonyStubOpenedFromLiveDock(
     .eq("id", match.id as string);
   if (upErr) throw upErr;
   return { marked: true, clientId: match.clientId as string };
+}
+
+/** Normalized phone for `CallLog.contactPhoneNormalized` (matches `ContactPoint.normalizedValue`). */
+export function computeCallLogContactPhoneNormalized(
+  phoneNormalized: string,
+  contactPhone10: string | null | undefined,
+): string | null {
+  const a = String(phoneNormalized ?? "").trim();
+  if (a.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) return a;
+  const from10 = (contactPhone10 ? normalizePhone(contactPhone10) : null) ?? "";
+  if (from10.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) return from10;
+  return null;
+}
+
+/** When the first call log creates a client, attach every orphan history row for the same number. */
+export async function linkOrphanCallLogsToClientByNormalizedPhone(
+  normalizedPhone: string,
+  clientId: string,
+): Promise<void> {
+  const norm = String(normalizedPhone ?? "").trim();
+  if (norm.length < MIN_PHONE_DIGITS_FOR_LOOKUP || !clientId.trim()) return;
+  const { error } = await sb()
+    .from(tables.CallLog)
+    .update({ clientId: clientId.trim() })
+    .is("clientId", null)
+    .eq("contactPhoneNormalized", norm);
+  if (error) throw error;
+}
+
+/** Prefill the Log a Call form when opening an unassigned telephony row from history. */
+export async function getCallLogOrphanPrefillForLogForm(callLogId: string): Promise<{
+  callLogId: string;
+  phoneDigits: string;
+  contactName: string;
+  direction: CallDirection;
+  happenedAtIso: string;
+} | null> {
+  const id = callLogId.trim();
+  if (!id) return null;
+  const { data: row, error } = await sb()
+    .from(tables.CallLog)
+    .select("id,clientId,contactPhone,contactName,direction,happenedAt")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!row || row.clientId != null) return null;
+  const dirRaw = String(row.direction ?? "INBOUND").toUpperCase();
+  const direction = dirRaw === "OUTBOUND" ? CallDirection.OUTBOUND : CallDirection.INBOUND;
+  const phoneDigits = normalizeCallLogPhoneDigits(String(row.contactPhone ?? ""));
+  return {
+    callLogId: row.id as string,
+    phoneDigits,
+    contactName: String(row.contactName ?? "").trim() || "Caller",
+    direction,
+    happenedAtIso: new Date(row.happenedAt as string).toISOString(),
+  };
 }
 
 /** Call result for telephony-synced logs that do not need a callback (answered / connected). */
@@ -2666,14 +2749,15 @@ function callLogImpliesOlderRcStubsShouldArchive(r: {
 
 async function collectClientIdsForTelephonyReconciliation(
   row: RingCentralImportedCall,
-  resolvedClientId: string,
-  persistedClientId?: string,
+  resolvedClientId: string | null,
+  persistedClientId?: string | null,
 ): Promise<string[]> {
-  const idSet = new Set<string>([resolvedClientId]);
+  const idSet = new Set<string>();
+  if (resolvedClientId) idSet.add(resolvedClientId);
   if (persistedClientId && persistedClientId !== resolvedClientId) {
     idSet.add(persistedClientId);
   }
-  if (row.phoneNormalized.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) {
+  if (resolvedClientId && row.phoneNormalized.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) {
     for (const m of await findClientsByNormalizedPhone(row.phoneNormalized)) {
       idSet.add(m.id);
     }
@@ -2785,14 +2869,13 @@ async function archiveDuplicateTelephonyCallbacksInWindow(params: {
 }
 
 /**
- * Idempotent on `ringCentralCallLogId`. Resolves client by phone: uses the **first** matching client
- * (oldest `ContactPoint` for that normalized number) so repeat calls don’t spawn duplicate clients;
- * creates a minimal client + primary phone only when no match exists.
+ * Idempotent on `ringCentralCallLogId`. Links to an existing client when that phone already has a
+ * `ContactPoint` (staff created a call log before). Otherwise `clientId` stays null until someone logs the call.
  */
 export async function upsertCallLogFromRingCentralImport(
   row: RingCentralImportedCall,
   integrationUserId: string,
-): Promise<{ callLogId: string; clientId: string; created: boolean }> {
+): Promise<{ callLogId: string; clientId: string | null; created: boolean }> {
   if (!row.ringCentralCallLogId?.trim()) {
     throw new Error("RingCentral call log id is required.");
   }
@@ -2817,21 +2900,22 @@ export async function upsertCallLogFromRingCentralImport(
     .eq("ringCentralCallLogId", row.ringCentralCallLogId)
     .maybeSingle();
 
-  let clientId: string;
+  let clientId: string | null = null;
   if (row.phoneNormalized.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) {
     const matches = await findClientsByNormalizedPhone(row.phoneNormalized);
     if (matches.length >= 1) {
       clientId = matches[0]!.id;
-    } else {
-      clientId = await createMinimalTelephonyClient(row.phoneNormalized, row.contactPhone10, row.contactName);
     }
-  } else {
-    clientId = await createMinimalTelephonyClient("", null, row.contactName);
   }
 
-  await enrichTelephonyClientDisplayNameFromCallerId(clientId, row.contactName);
+  const phoneNormCol = computeCallLogContactPhoneNormalized(row.phoneNormalized, row.contactPhone10);
 
-  if (!existing && row.telephonyCallbackPending) {
+  const effectiveCallbackPending = Boolean(clientId && row.telephonyCallbackPending);
+  const effectiveOutcomeCode = effectiveCallbackPending
+    ? TELEPHONY_CALLBACK_OUTCOME_CODE
+    : TELEPHONY_IMPORT_OUTCOME_CODE;
+
+  if (!existing && effectiveCallbackPending && clientId) {
     await archiveDuplicateTelephonyCallbacksInWindow({
       clientId,
       contactPhone10: row.contactPhone10,
@@ -2852,18 +2936,19 @@ export async function upsertCallLogFromRingCentralImport(
     telephonyRecordingRefs: persistedRefs,
     telephonyMetadata: row.metadata,
     telephonyResult: row.telephonyResult,
-    telephonyCallbackPending: row.telephonyCallbackPending,
+    telephonyCallbackPending: effectiveCallbackPending,
   };
 
   if (existing) {
     const patch: Record<string, unknown> = {
       telephonyMetadata: row.metadata,
       telephonyResult: row.telephonyResult,
-      telephonyCallbackPending: row.telephonyCallbackPending,
+      telephonyCallbackPending: effectiveCallbackPending,
       direction: row.direction,
       happenedAt: row.happenedAt.toISOString(),
       contactPhone: row.contactPhone10,
       contactName: row.contactName,
+      contactPhoneNormalized: phoneNormCol,
     };
     if (row.recordings !== undefined) {
       const refs = row.recordings.length ? dedupeTelephonyRecordingRefs(row.recordings) : null;
@@ -2882,24 +2967,29 @@ export async function upsertCallLogFromRingCentralImport(
     const summaryTrim = String((existing as { summary?: string | null }).summary ?? "").trim();
     const isPlaceholderSummary = summaryTrim === TELEPHONY_CALL_SUMMARY_PLACEHOLDER;
     if (Boolean(existing.telephonyDraft) || isPlaceholderSummary) {
-      patch.outcomeCode = row.telephonyCallbackPending
-        ? TELEPHONY_CALLBACK_OUTCOME_CODE
-        : TELEPHONY_IMPORT_OUTCOME_CODE;
+      patch.outcomeCode = effectiveCallbackPending ? TELEPHONY_CALLBACK_OUTCOME_CODE : TELEPHONY_IMPORT_OUTCOME_CODE;
       patch.followUpAt = null;
+    }
+    if (!existing.telephonyDraft) {
+      patch.telephonyCallbackPending = false;
     }
     const { error: uErr } = await sb().from(tables.CallLog).update(patch).eq("id", existing.id);
     if (uErr) throw uErr;
-    const callLogId = existing.id;
-    const persistedClientId = existing.clientId as string;
-    if (row.telephonyCallbackPending) {
+    const callLogId = existing.id as string;
+    const persistedClientId = (existing.clientId as string | null) ?? null;
+    if (effectiveCallbackPending && persistedClientId) {
       await archiveDuplicateTelephonyCallbacksInWindow({
         clientId: persistedClientId,
         contactPhone10: row.contactPhone10,
         center: row.happenedAt,
-        exceptCallLogId: callLogId as string,
+        exceptCallLogId: callLogId,
       });
     }
-    const reconcileIds = await collectClientIdsForTelephonyReconciliation(row, clientId, persistedClientId);
+    const reconcileIds = await collectClientIdsForTelephonyReconciliation(
+      row,
+      clientId,
+      persistedClientId,
+    );
     for (const cid of reconcileIds) {
       await reconcileTelephonyCallbacksIfLatestCallAnswered(cid);
     }
@@ -2913,12 +3003,11 @@ export async function upsertCallLogFromRingCentralImport(
     userId: integrationUserId,
     direction: row.direction,
     happenedAt: row.happenedAt.toISOString(),
-    outcomeCode: row.telephonyCallbackPending
-      ? TELEPHONY_CALLBACK_OUTCOME_CODE
-      : TELEPHONY_IMPORT_OUTCOME_CODE,
+    outcomeCode: effectiveOutcomeCode,
     summary: TELEPHONY_CALL_SUMMARY_PLACEHOLDER,
     contactPhone: row.contactPhone10,
     contactName: row.contactName,
+    contactPhoneNormalized: phoneNormCol,
     vehicleText: null,
     product: "GENERAL",
     priceText: null,
@@ -2959,15 +3048,20 @@ export async function applyRingCentralImportToExistingCallLogById(
     throw new Error("Call log not found.");
   }
 
+  const persistedClientId = (existing.clientId as string | null) ?? null;
+  const effectiveCallbackPending = Boolean(persistedClientId && row.telephonyCallbackPending);
+  const phoneNormCol = computeCallLogContactPhoneNormalized(row.phoneNormalized, row.contactPhone10);
+
   const patch: Record<string, unknown> = {
     ringCentralCallLogId: row.ringCentralCallLogId,
     telephonyMetadata: row.metadata,
     telephonyResult: row.telephonyResult,
-    telephonyCallbackPending: row.telephonyCallbackPending,
+    telephonyCallbackPending: effectiveCallbackPending,
     direction: row.direction,
     happenedAt: row.happenedAt.toISOString(),
     contactPhone: row.contactPhone10,
     contactName: row.contactName,
+    contactPhoneNormalized: phoneNormCol,
   };
   if (row.recordings !== undefined) {
     const refs = row.recordings.length ? dedupeTelephonyRecordingRefs(row.recordings) : null;
@@ -2986,15 +3080,12 @@ export async function applyRingCentralImportToExistingCallLogById(
   const summaryTrim = String((existing as { summary?: string | null }).summary ?? "").trim();
   const isPlaceholderSummary = summaryTrim === TELEPHONY_CALL_SUMMARY_PLACEHOLDER;
   if (Boolean((existing as { telephonyDraft?: boolean }).telephonyDraft) || isPlaceholderSummary) {
-    patch.outcomeCode = row.telephonyCallbackPending
-      ? TELEPHONY_CALLBACK_OUTCOME_CODE
-      : TELEPHONY_IMPORT_OUTCOME_CODE;
+    patch.outcomeCode = effectiveCallbackPending ? TELEPHONY_CALLBACK_OUTCOME_CODE : TELEPHONY_IMPORT_OUTCOME_CODE;
     patch.followUpAt = null;
   }
   const { error: uErr } = await sb().from(tables.CallLog).update(patch).eq("id", crmCallLogId);
   if (uErr) throw uErr;
-  const persistedClientId = existing.clientId as string;
-  if (row.telephonyCallbackPending) {
+  if (effectiveCallbackPending && persistedClientId) {
     await archiveDuplicateTelephonyCallbacksInWindow({
       clientId: persistedClientId,
       contactPhone10: row.contactPhone10,
@@ -3002,9 +3093,11 @@ export async function applyRingCentralImportToExistingCallLogById(
       exceptCallLogId: crmCallLogId,
     });
   }
-  const reconcileIds = await collectClientIdsForTelephonyReconciliation(row, persistedClientId, persistedClientId);
-  for (const cid of reconcileIds) {
-    await reconcileTelephonyCallbacksIfLatestCallAnswered(cid);
+  if (persistedClientId) {
+    const reconcileIds = await collectClientIdsForTelephonyReconciliation(row, persistedClientId, persistedClientId);
+    for (const cid of reconcileIds) {
+      await reconcileTelephonyCallbacksIfLatestCallAnswered(cid);
+    }
   }
 }
 
@@ -3041,7 +3134,7 @@ export type TelephonyWebhookSessionStubInput = {
 export async function upsertCallLogFromTelephonyWebhookStub(
   input: TelephonyWebhookSessionStubInput,
   integrationUserId: string,
-): Promise<{ callLogId: string; clientId: string; created: boolean }> {
+): Promise<{ callLogId: string; clientId: string | null; created: boolean }> {
   const ringCentralCallLogId = webhookTelephonyPlaceholderRingCentralId(input.telephonySessionId);
   const row: RingCentralImportedCall = {
     ringCentralCallLogId,
@@ -3059,63 +3152,6 @@ export async function upsertCallLogFromTelephonyWebhookStub(
     telephonyAnsweredConnected: input.telephonyAnsweredConnected,
   };
   return upsertCallLogFromRingCentralImport(row, integrationUserId);
-}
-
-/** New RingCentral stubs: use caller-ID name when present; otherwise "Caller". */
-async function createMinimalTelephonyClient(
-  phoneNormalized: string,
-  contactPhone10: string | null,
-  displayNameHint: string,
-): Promise<string> {
-  const hint = displayNameHint.trim();
-  const displayName =
-    hint.length >= 2 && hint.toLowerCase() !== "caller" ? hint.slice(0, 200) : "Caller";
-  const cid = newId();
-  const { error: cErr } = await sb().from(tables.Client).insert({
-    id: cid,
-    displayName,
-    source: "RingCentral",
-    notes: null,
-    companyName: null,
-    tags: null,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  });
-  if (cErr) throw cErr;
-  if (phoneNormalized.length >= MIN_PHONE_DIGITS_FOR_LOOKUP) {
-    const value = contactPhone10 ?? phoneNormalized;
-    const { error: pErr } = await sb().from(tables.ContactPoint).insert({
-      id: newId(),
-      clientId: cid,
-      kind: "PHONE",
-      value,
-      normalizedValue: phoneNormalized,
-      isPrimary: true,
-      createdAt: nowIso(),
-    });
-    if (pErr) throw pErr;
-  }
-  return cid;
-}
-
-/** If the client is still the generic RingCentral stub, replace displayName with caller-ID from the latest sync. */
-async function enrichTelephonyClientDisplayNameFromCallerId(clientId: string, contactName: string): Promise<void> {
-  const t = contactName.trim();
-  if (t.length < 2 || t === "Caller") return;
-  const { data: row, error: fErr } = await sb()
-    .from(tables.Client)
-    .select("id,displayName")
-    .eq("id", clientId)
-    .maybeSingle();
-  if (fErr) throw fErr;
-  if (!row) return;
-  const current = String((row.displayName as string | null) ?? "").trim();
-  if (current !== "Caller") return;
-  const { error: uErr } = await sb()
-    .from(tables.Client)
-    .update({ displayName: t.slice(0, 200), updatedAt: nowIso() })
-    .eq("id", clientId);
-  if (uErr) throw uErr;
 }
 
 export { sanitizeTelephonyContactName };
@@ -3243,6 +3279,50 @@ export async function getBookingTypeOptions(activeOnly = true) {
     ...r,
     createdAt: toDate(r.createdAt as string),
   }));
+}
+
+export type CalendarTagOptionRow = {
+  code: string;
+  label: string;
+  googleColorId: string | null;
+  accentHex: string | null;
+  sortOrder: number;
+  active: boolean;
+};
+
+export async function getCalendarTagOptions(activeOnly = true): Promise<CalendarTagOptionRow[]> {
+  let q = sb().from(tables.CalendarTagOption).select("*").order("sortOrder", { ascending: true });
+  if (activeOnly) q = q.eq("active", true);
+  const { data, error } = await q;
+  if (error) {
+    if (String((error as { code?: string }).code) === "42P01" || String(error.message ?? "").includes("CalendarTagOption")) {
+      return [];
+    }
+    throw error;
+  }
+  return (data ?? []).map((r) => ({
+    code: String((r as { code: string }).code),
+    label: String((r as { label: string }).label),
+    googleColorId: ((r as { googleColorId?: string | null }).googleColorId ?? null) as string | null,
+    accentHex: ((r as { accentHex?: string | null }).accentHex ?? null) as string | null,
+    sortOrder: Number((r as { sortOrder?: number }).sortOrder ?? 0),
+    active: Boolean((r as { active?: boolean }).active),
+  }));
+}
+
+async function googleColorIdForCalendarTagCode(code: string | null | undefined): Promise<string | undefined> {
+  const c = String(code ?? "").trim();
+  if (!c) return undefined;
+  const { data, error } = await sb()
+    .from(tables.CalendarTagOption)
+    .select("googleColorId")
+    .eq("code", c)
+    .eq("active", true)
+    .maybeSingle();
+  if (error) return undefined;
+  const id = String((data as { googleColorId?: string | null } | null)?.googleColorId ?? "").trim();
+  if (!/^(1|2|3|4|5|6|7|8|9|10|11)$/.test(id)) return undefined;
+  return id;
 }
 
 export async function requireActiveBookingTypeCode(code: string) {
@@ -3824,11 +3904,16 @@ export async function addCallLog(
 
   const primary = resolvedLines[0]!;
 
+  const phoneNormForDb = phoneDigits ? normalizePhone(phoneDigits) : null;
+  const contactPhoneNormalized =
+    phoneNormForDb && phoneNormForDb.length >= MIN_PHONE_DIGITS_FOR_LOOKUP ? phoneNormForDb : null;
+
   const callLogPayload = {
     direction: data.direction,
     happenedAt: (data.happenedAt ? new Date(data.happenedAt) : new Date()).toISOString(),
     contactPhone: phoneDigits || null,
     contactName: data.contactName || null,
+    contactPhoneNormalized,
     vehicleText: data.vehicleText || null,
     product: primary.product,
     priceText: primary.priceText,
@@ -3839,21 +3924,35 @@ export async function addCallLog(
     outcomeCode: data.outcomeCode,
     internalNotes: data.internalNotes || null,
     followUpAt: data.followUpAt ? new Date(data.followUpAt).toISOString() : null,
+    telephonyDraft: false,
   };
 
   const trimmedLogId = (data.callLogId || "").trim();
   if (trimmedLogId) {
     const { data: existing } = await sb()
       .from(tables.CallLog)
-      .select("id")
+      .select("id,clientId")
       .eq("id", trimmedLogId)
-      .eq("clientId", clientId)
       .maybeSingle();
     if (existing) {
-      const { error: uErr } = await sb().from(tables.CallLog).update(callLogPayload).eq("id", existing.id);
+      const existingCid = (existing.clientId as string | null) ?? null;
+      if (existingCid != null && existingCid !== clientId) {
+        throw new UserInputError("That call log belongs to another client.");
+      }
+      const { error: uErr } = await sb()
+        .from(tables.CallLog)
+        .update({
+          ...callLogPayload,
+          clientId,
+          userId,
+        })
+        .eq("id", existing.id);
       if (uErr) throw uErr;
+      if (contactPhoneNormalized) {
+        await linkOrphanCallLogsToClientByNormalizedPhone(contactPhoneNormalized, clientId);
+      }
       await reconcileTelephonyCallbacksIfLatestCallAnswered(clientId);
-      return { callLogId: existing.id, clientId };
+      return { callLogId: existing.id as string, clientId };
     }
   }
 
@@ -3867,6 +3966,9 @@ export async function addCallLog(
   });
   if (lErr) throw lErr;
 
+  if (contactPhoneNormalized) {
+    await linkOrphanCallLogsToClientByNormalizedPhone(contactPhoneNormalized, clientId);
+  }
   await reconcileTelephonyCallbacksIfLatestCallAnswered(clientId);
   return { callLogId: logId, clientId };
 }
@@ -3991,6 +4093,10 @@ export async function updateCallLogForClient(input: z.infer<typeof updateCallLog
 
   const primary = resolvedLines[0]!;
 
+  const updPhoneNorm = phoneDigits ? normalizePhone(phoneDigits) : null;
+  const updContactPhoneNormalized =
+    updPhoneNorm && updPhoneNorm.length >= MIN_PHONE_DIGITS_FOR_LOOKUP ? updPhoneNorm : null;
+
   const { error: uErr } = await sb()
     .from(tables.CallLog)
     .update({
@@ -3999,6 +4105,7 @@ export async function updateCallLogForClient(input: z.infer<typeof updateCallLog
       outcomeCode: data.outcomeCode,
       summary: data.summary,
       contactPhone: phoneDigits || null,
+      contactPhoneNormalized: updContactPhoneNormalized,
       contactName: data.contactName?.trim() || null,
       vehicleText: data.vehicleText?.trim() || null,
       product: primary.product,
@@ -4065,6 +4172,9 @@ export async function addAppointment(input: z.infer<typeof appointmentSchema>, u
   );
   const googleSyncStatus = gPlan.mode !== "none" ? GoogleSyncStatus.PENDING : GoogleSyncStatus.NOT_CONFIGURED;
 
+  const calendarTagStored = data.calendarTagCode?.trim() ? data.calendarTagCode.trim() : null;
+  const googleColorId = await googleColorIdForCalendarTagCode(calendarTagStored);
+
   const appointmentId = newId();
   const insertRow = {
     id: appointmentId,
@@ -4092,6 +4202,7 @@ export async function addAppointment(input: z.infer<typeof appointmentSchema>, u
     visibility: data.visibility,
     depositText: depositStored,
     callLogId: callLogIdRaw,
+    calendarTagCode: calendarTagStored,
   };
 
   const { error } = await sb().from(tables.Appointment).insert(insertRow);
@@ -4108,6 +4219,7 @@ export async function addAppointment(input: z.infer<typeof appointmentSchema>, u
     showAs: data.showAs,
     visibility: data.visibility,
     recurrence: toGoogleRecurrenceArray(recurrenceStored),
+    colorId: googleColorId ?? null,
   };
 
   if (gPlan.mode === "user") {
@@ -4199,6 +4311,7 @@ export async function getAppointmentForEditor(id: string): Promise<AppointmentEd
     visibility: (r.visibility as string) || "default",
     depositText: (r.depositText as string | null) ?? null,
     callLogId: (r.callLogId as string | null) ?? null,
+    calendarTagCode: (r.calendarTagCode as string | null) ?? null,
     linkedCall: null,
     client,
   };
@@ -4262,6 +4375,7 @@ export async function rescheduleCrmAppointment(appointmentId: string, newStartAt
       showAs: appt.showAs === "free" ? "free" : "busy",
       visibility,
       depositText: appt.depositText ?? null,
+      calendarTagCode: appt.calendarTagCode ?? null,
     },
     userId,
   );
@@ -4297,6 +4411,8 @@ export async function updateAppointment(input: z.infer<typeof updateAppointmentS
   const kind = data.calendarEntryKind;
   const capacitySlot = startAt.toISOString().slice(0, 16);
   const depositStored = normalizeAppointmentDepositText(data.depositText ?? null);
+  const calendarTagStored = data.calendarTagCode?.trim() ? data.calendarTagCode.trim() : null;
+  const googleColorId = await googleColorIdForCalendarTagCode(calendarTagStored);
 
   const { data: updatedRows, error: uErr } = await sb()
     .from(tables.Appointment)
@@ -4318,6 +4434,7 @@ export async function updateAppointment(input: z.infer<typeof updateAppointmentS
       showAs: data.showAs,
       visibility: data.visibility,
       depositText: depositStored,
+      calendarTagCode: calendarTagStored,
       updatedAt: nowIso(),
     })
     .eq("id", data.appointmentId)
@@ -4353,6 +4470,7 @@ export async function updateAppointment(input: z.infer<typeof updateAppointmentS
     attendeeEmails: parseGuestEmailsFromRaw(guestStored),
     showAs: data.showAs as "busy" | "free",
     visibility: data.visibility as "default" | "public" | "private" | "confidential",
+    colorId: googleColorId ?? null,
     ...(googleRecurrence?.length ? { recurrence: googleRecurrence } : {}),
   };
 

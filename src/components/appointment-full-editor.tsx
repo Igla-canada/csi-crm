@@ -67,6 +67,8 @@ type Props = {
   initialClientPhone?: string;
   clients: AppointmentFormClientOption[];
   typeOptions: { code: string; label: string }[];
+  /** Maps to Google Calendar color when syncing. */
+  calendarTagOptions?: { code: string; label: string }[];
   googleConnected: boolean;
   calendarOwnerLabel: string;
   timeZoneLabel: string;
@@ -85,6 +87,7 @@ export function AppointmentFullEditor({
   initialClientPhone = "",
   clients,
   typeOptions,
+  calendarTagOptions = [],
   googleConnected,
   calendarOwnerLabel,
   timeZoneLabel,
@@ -123,6 +126,7 @@ export function AppointmentFullEditor({
   const [vehicleId, setVehicleId] = useState(appointment?.vehicleId ?? "");
   const [vehicleText, setVehicleText] = useState(appointment?.vehicleLabel ?? "");
   const [type, setType] = useState(appointment?.type ?? typeOptions[0]?.code ?? "");
+  const [calendarTagCode, setCalendarTagCode] = useState(appointment?.calendarTagCode ?? "");
   const [resourceKey, setResourceKey] = useState(appointment?.resourceKey ?? "front-desk");
   const [location, setLocation] = useState(appointment?.location ?? "");
   const [guestEmails, setGuestEmails] = useState(appointment?.guestEmails ?? "");
@@ -227,6 +231,7 @@ export function AppointmentFullEditor({
     fd.set("recurrenceRule", recurrenceRule);
     fd.set("showAs", showAs);
     fd.set("visibility", visibility);
+    fd.set("calendarTagCode", calendarTagCode.trim());
 
     if (mode === "create") {
       fd.set("productQuoteLinesJson", serializeBookingQuoteLines(quoteLines));
@@ -420,6 +425,26 @@ export function AppointmentFullEditor({
                 ))}
               </select>
             </label>
+
+            {calendarTagOptions.length > 0 ? (
+              <label className="block">
+                <span className="text-xs font-medium uppercase tracking-wide text-[#70757a]">
+                  Calendar tag (Google color)
+                </span>
+                <select
+                  value={calendarTagCode}
+                  onChange={(e) => setCalendarTagCode(e.target.value)}
+                  className={cn("mt-1", input)}
+                >
+                  <option value="">None</option>
+                  {calendarTagOptions.map((t) => (
+                    <option key={t.code} value={t.code}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
 
             <label className="block">
               <span className="text-xs font-medium uppercase tracking-wide text-[#70757a]">Resource</span>

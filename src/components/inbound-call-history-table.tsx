@@ -793,12 +793,16 @@ export function InboundCallHistoryTable({
                   <InboundHistoryRecordingCell callLogId={row.id} recordingCount={row.recordingCount ?? 0} />
                 </td>
                 <td className="py-3 pr-4 align-top font-medium text-slate-900">
-                  <Link
-                    href={`/clients/${row.clientId}`}
-                    className="text-[#1e5ea8] hover:text-[#17497f] hover:underline"
-                  >
-                    {row.clientDisplayName}
-                  </Link>
+                  {row.clientId ? (
+                    <Link
+                      href={`/clients/${row.clientId}`}
+                      className="text-[#1e5ea8] hover:text-[#17497f] hover:underline"
+                    >
+                      {row.clientDisplayName}
+                    </Link>
+                  ) : (
+                    <span className="text-slate-600">{row.clientDisplayName}</span>
+                  )}
                 </td>
                 <td className="py-3 pr-4 align-top text-slate-700">{row.contactName?.trim() || "—"}</td>
                 <td className="py-3 pr-4 align-top text-slate-700">{row.contactPhone?.trim() || "—"}</td>

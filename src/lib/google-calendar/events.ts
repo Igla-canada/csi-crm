@@ -29,6 +29,8 @@ export type GoogleCalendarEventWriteInput = {
   visibility?: "default" | "public" | "private" | "confidential";
   /** e.g. ["RRULE:FREQ=WEEKLY"] — omit or empty for one-off events */
   recurrence?: string[] | null;
+  /** Google palette id `"1"`–`"11"` when set */
+  colorId?: string | null;
 };
 
 function parseGoogleEventBounds(e: calendar_v3.Schema$Event): { start: Date; end: Date; allDay: boolean } | null {
@@ -124,6 +126,7 @@ function buildEventRequestBody(input: GoogleCalendarEventWriteInput): calendar_v
   const recurrence =
     input.recurrence && input.recurrence.length > 0 ? input.recurrence : undefined;
 
+  const colorId = input.colorId?.trim() ? input.colorId.trim() : undefined;
   const base: calendar_v3.Schema$Event = {
     summary: input.summary,
     description: input.description?.trim() ? input.description.trim() : undefined,
@@ -132,6 +135,7 @@ function buildEventRequestBody(input: GoogleCalendarEventWriteInput): calendar_v
     visibility,
     attendees,
     recurrence,
+    colorId,
   };
 
   if (input.allDay) {
@@ -219,6 +223,7 @@ export type GoogleCalendarEventPatchInput = {
   visibility?: "default" | "public" | "private" | "confidential";
   /** When set, Google Calendar recurrence is updated (same shape as insert). */
   recurrence?: string[];
+  colorId?: string | null;
 };
 
 function buildPatchBody(body: GoogleCalendarEventPatchInput): calendar_v3.Schema$Event {
@@ -256,6 +261,10 @@ function buildPatchBody(body: GoogleCalendarEventPatchInput): calendar_v3.Schema
 
   if (body.recurrence?.length) {
     out.recurrence = body.recurrence;
+  }
+
+  if (body.colorId !== undefined) {
+    out.colorId = body.colorId?.trim() ? body.colorId.trim() : undefined;
   }
 
   return out;

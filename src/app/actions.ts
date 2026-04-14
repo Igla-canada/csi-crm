@@ -114,8 +114,13 @@ export async function openCallFromHistoryAction(formData: FormData): Promise<Ope
   try {
     const { clientId } = await markCallLogOpenedFromCallHistory(callLogId);
     revalidatePath("/calls/history", "page");
-    revalidatePath(`/clients/${clientId}`, "page");
-    const href = `/clients/${clientId}?openCallLog=${encodeURIComponent(callLogId)}`;
+    revalidatePath("/calls", "page");
+    if (clientId) {
+      revalidatePath(`/clients/${clientId}`, "page");
+      const href = `/clients/${clientId}?openCallLog=${encodeURIComponent(callLogId)}`;
+      return { ok: true, href };
+    }
+    const href = `/calls?openCallLog=${encodeURIComponent(callLogId)}&fromHistory=1`;
     return { ok: true, href };
   } catch (e) {
     if (e instanceof UserInputError) {
@@ -300,6 +305,7 @@ export async function createCallLogAction(
     revalidatePath("/reports", "page");
     revalidatePath("/appointments", "page");
     revalidatePath("/tasks", "page");
+    revalidatePath("/calls/history", "page");
 
     return {
       ok: true,
@@ -871,6 +877,7 @@ export async function createAppointmentAction(formData: FormData) {
       visibility,
       depositText: String(formData.get("depositText") || "").trim() || null,
       callLogId: effectiveCallLogId || null,
+      calendarTagCode: String(formData.get("calendarTagCode") || "").trim() || null,
     },
     currentUser.id,
   );
@@ -948,6 +955,7 @@ export async function updateAppointmentAction(formData: FormData) {
       showAs,
       visibility,
       depositText: String(formData.get("depositText") || "").trim() || null,
+      calendarTagCode: String(formData.get("calendarTagCode") || "").trim() || null,
     },
     currentUser.id,
   );

@@ -10,6 +10,8 @@
     "db:seed": "tsx scripts/seed.ts",
     "db:wipe": "tsx scripts/wipe-operational-data.ts",
     "db:wipe:confirm": "tsx scripts/wipe-operational-data.ts --confirm",
+    "db:merge-clients:dry": "tsx scripts/merge-duplicate-clients-by-phone.ts",
+    "db:merge-clients:confirm": "tsx scripts/merge-duplicate-clients-by-phone.ts --confirm",
     "db:wipe-all:confirm": "tsx scripts/wipe-all.ts --confirm",
     "db:push": "node scripts/supabase-db-push.cjs",
     "db:push:linked": "supabase db push --yes"

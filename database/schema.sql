@@ -78,6 +78,23 @@ CREATE TABLE "CallResultOption" (
     CONSTRAINT "CallResultOption_pkey" PRIMARY KEY ("code")
 );
 
+CREATE TABLE "CalendarTagOption" (
+    "code" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "googleColorId" TEXT,
+    "accentHex" TEXT,
+    "sortOrder" INTEGER NOT NULL DEFAULT 0,
+    "active" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "CalendarTagOption_pkey" PRIMARY KEY ("code")
+);
+
+INSERT INTO "CalendarTagOption" ("code", "label", "googleColorId", "accentHex", "sortOrder", "active") VALUES
+  ('DEFAULT', 'Default', '1', NULL, 0, true),
+  ('DEPOSIT', 'Deposit taken', '10', '#0f9d58', 10, true),
+  ('FOLLOWUP', 'Needs follow-up', '6', '#f4511e', 20, true),
+  ('CONFIRMED', 'Confirmed', '9', '#039be5', 30, true);
+
 CREATE TABLE "BookingTypeOption" (
     "code" TEXT NOT NULL,
     "label" TEXT NOT NULL,
@@ -113,11 +130,12 @@ CREATE TABLE "LeadSourceOption" (
 
 CREATE TABLE "CallLog" (
     "id" TEXT NOT NULL,
-    "clientId" TEXT NOT NULL,
+    "clientId" TEXT,
     "userId" TEXT NOT NULL,
     "direction" "CallDirection" NOT NULL,
     "happenedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "contactPhone" TEXT,
+    "contactPhoneNormalized" TEXT,
     "contactName" TEXT,
     "vehicleText" TEXT,
     "product" TEXT,
@@ -152,6 +170,8 @@ CREATE TABLE "CallLog" (
 CREATE UNIQUE INDEX "CallLog_ringCentralCallLogId_key" ON "CallLog"("ringCentralCallLogId") WHERE "ringCentralCallLogId" IS NOT NULL;
 CREATE INDEX "CallLog_telephonyAiJobId_idx" ON "CallLog"("telephonyAiJobId") WHERE "telephonyAiJobId" IS NOT NULL;
 CREATE INDEX "CallLog_clientId_happenedAt_idx" ON "CallLog"("clientId", "happenedAt");
+CREATE INDEX "CallLog_contactPhoneNormalized_idx" ON "CallLog"("contactPhoneNormalized") WHERE "contactPhoneNormalized" IS NOT NULL;
+CREATE INDEX "CallLog_clientId_null_phone_idx" ON "CallLog"("contactPhoneNormalized", "happenedAt" DESC) WHERE "clientId" IS NULL AND "contactPhoneNormalized" IS NOT NULL;
 CREATE INDEX "CallLog_userId_happenedAt_idx" ON "CallLog"("userId", "happenedAt");
 CREATE INDEX "CallLog_followUpAt_idx" ON "CallLog"("followUpAt");
 CREATE INDEX "CallLog_telephonyCallbackPending_idx" ON "CallLog"("happenedAt" DESC) WHERE "telephonyCallbackPending" = true;
@@ -197,6 +217,7 @@ CREATE TABLE "Appointment" (
     "notes" TEXT,
     "depositText" TEXT,
     "callLogId" TEXT,
+    "calendarTagCode" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     CONSTRAINT "Appointment_pkey" PRIMARY KEY ("id"),
@@ -204,7 +225,8 @@ CREATE TABLE "Appointment" (
     CONSTRAINT "Appointment_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "Vehicle"("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Appointment_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT "Appointment_type_fkey" FOREIGN KEY ("type") REFERENCES "BookingTypeOption"("code") ON UPDATE CASCADE ON DELETE RESTRICT,
-    CONSTRAINT "Appointment_callLogId_fkey" FOREIGN KEY ("callLogId") REFERENCES "CallLog"("id") ON DELETE SET NULL ON UPDATE CASCADE
+    CONSTRAINT "Appointment_callLogId_fkey" FOREIGN KEY ("callLogId") REFERENCES "CallLog"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Appointment_calendarTagCode_fkey" FOREIGN KEY ("calendarTagCode") REFERENCES "CalendarTagOption"("code") ON DELETE SET NULL ON UPDATE CASCADE
 );
 CREATE INDEX "Appointment_startAt_endAt_idx" ON "Appointment"("startAt", "endAt");
 CREATE INDEX "Appointment_resourceKey_startAt_idx" ON "Appointment"("resourceKey", "startAt");

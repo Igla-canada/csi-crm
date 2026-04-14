@@ -7,6 +7,7 @@ export const tables = {
   CallLog: "CallLog",
   CallResultOption: "CallResultOption",
   BookingTypeOption: "BookingTypeOption",
+  CalendarTagOption: "CalendarTagOption",
   ProductServiceOption: "ProductServiceOption",
   LeadSourceOption: "LeadSourceOption",
   Opportunity: "Opportunity",

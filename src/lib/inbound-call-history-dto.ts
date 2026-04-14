@@ -3,7 +3,8 @@ export type InboundCallHistoryRowDto = {
   id: string;
   /** Whether this log is an inbound or outbound call. */
   direction: "INBOUND" | "OUTBOUND";
-  clientId: string;
+  /** Null until staff saves a call log for this number (telephony-only row). */
+  clientId: string | null;
   clientDisplayName: string;
   contactPhone: string | null;
   contactName: string | null;

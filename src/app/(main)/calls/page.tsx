@@ -1,8 +1,13 @@
+import { format } from "date-fns";
+import { TZDate } from "@date-fns/tz";
+
 import { Card, SectionHeading } from "@/components/app-shell";
 import { LogCallForm } from "@/components/log-call-form";
+import { CallDirection } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
-import { getCallResultOptions, getLeadSourceOptions, getProductServiceOptions } from "@/lib/crm";
+import { getCallLogOrphanPrefillForLogForm, getCallResultOptions, getLeadSourceOptions, getProductServiceOptions } from "@/lib/crm";
 import { parseCallDirectionSearchParam } from "@/lib/call-direction-search-param";
+import { getAppTimezone } from "@/lib/google-calendar/env";
 import { getTorontoNowDatetimeLocalValue } from "@/lib/toronto-datetime-input";
 import { getUserCapabilities } from "@/lib/user-privileges";
 import { redirect } from "next/navigation";
@@ -33,6 +38,29 @@ export default async function CallsPage({ searchParams }: CallsPageProps) {
           clientId: firstParam(sp.clientId),
         }
       : null;
+
+  const openCallLogId = firstParam(sp.openCallLog);
+  const fromHistory = firstParam(sp.fromHistory) === "1";
+  let historyOrphanPrefill: {
+    callLogId: string;
+    phoneDigits: string;
+    contactName: string;
+    direction: CallDirection;
+    happenedAtLocal: string;
+  } | null = null;
+  if (openCallLogId && fromHistory) {
+    const orphan = await getCallLogOrphanPrefillForLogForm(openCallLogId);
+    if (orphan) {
+      const zd = new TZDate(new Date(orphan.happenedAtIso).getTime(), getAppTimezone());
+      historyOrphanPrefill = {
+        callLogId: orphan.callLogId,
+        phoneDigits: orphan.phoneDigits,
+        contactName: orphan.contactName,
+        direction: orphan.direction,
+        happenedAtLocal: format(zd, "yyyy-MM-dd'T'HH:mm"),
+      };
+    }
+  }
 
   const defaultTorontoTime = getTorontoNowDatetimeLocalValue();
   const [callResultOptions, productServiceOptions, leadSourceOptions] = await Promise.all([
@@ -69,6 +97,7 @@ export default async function CallsPage({ searchParams }: CallsPageProps) {
       productServiceOptions={logProductOptions}
       leadSourceOptions={logLeadSourceOptions}
       liveLogPrefill={liveLogPrefill}
+      historyOrphanPrefill={historyOrphanPrefill}
     />
   ) : (
     <p className="mt-4 text-sm leading-6 text-slate-600">
@@ -95,6 +124,12 @@ export default async function CallsPage({ searchParams }: CallsPageProps) {
           <h3 className="mt-2 text-xl font-semibold text-slate-900">
             {caps.canLogCalls ? "Save a full call log" : "View-only access"}
           </h3>
+          {historyOrphanPrefill ? (
+            <p className="mt-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+              You opened an <span className="font-semibold">unassigned</span> call from history. Saving creates the
+              client and links this call plus any other calls from the same phone number.
+            </p>
+          ) : null}
           {callFormOrReadOnly}
         </Card>
       </section>

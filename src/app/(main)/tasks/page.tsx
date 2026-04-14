@@ -55,13 +55,15 @@ export default async function TasksPage() {
                 Callbacks & scheduled follow-ups
               </h3>
               <p className="mt-1 max-w-2xl text-sm text-slate-600">
-                Includes any call with a <span className="font-medium text-slate-800">follow-up time</span>, result{" "}
+                Includes calls tied to a <span className="font-medium text-slate-800">client</span> with a{" "}
+                <span className="font-medium text-slate-800">follow-up time</span>, result{" "}
                 <span className="font-medium text-slate-800">Callback needed</span> /{" "}
                 <span className="font-medium text-slate-800">Follow up</span>, or a{" "}
-                <span className="font-medium text-slate-800">RingCentral</span> imports that need a callback start as{" "}
-                <span className="font-medium text-slate-800">Callback needed</span> (voicemail / missed / no-answer).
-                After you return the call, set the card to <span className="font-medium text-slate-800">Completed</span>{" "}
-                or <span className="font-medium text-slate-800">Archived</span> and it leaves this list.
+                <span className="font-medium text-slate-800">RingCentral</span> row that still needs a callback
+                (voicemail / missed) once that number is linked to a client. Unassigned call history never appears here
+                until you log the call. After you return the call, set the card to{" "}
+                <span className="font-medium text-slate-800">Completed</span> or{" "}
+                <span className="font-medium text-slate-800">Archived</span> and it leaves this list.
               </p>
             </div>
           </div>
@@ -93,7 +95,7 @@ export default async function TasksPage() {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <p className="font-semibold text-slate-900">{call.client.displayName}</p>
+                        <p className="font-semibold text-slate-900">{call.client?.displayName ?? "Client"}</p>
                         <p className="mt-1 line-clamp-2 text-sm text-slate-700">{call.summary}</p>
                         {call.telephonyCallbackPending && call.telephonyResult?.trim() ? (
                           <p className="mt-1 text-xs font-semibold text-rose-800">

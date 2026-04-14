@@ -407,6 +407,33 @@ function isExcludedNonVoiceCallType(typeLower: string): boolean {
   );
 }
 
+function numDurationField(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return Math.min(Math.round(v), 86400);
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) return Math.min(parseInt(v.trim(), 10), 86400);
+  return 0;
+}
+
+/** Longest `duration` on the row or any nested `legs` (TELUS / FindMe splits put talk time on child legs). */
+function maxDurationSecondsFromRcRecordTree(rec: RcCallRecord): number {
+  const o = rec as unknown as Record<string, unknown>;
+  let max = numDurationField(o.duration);
+  const walk = (legs: unknown) => {
+    for (const leg of normalizeLegsArray(legs as RcLeg[] | RcLeg | undefined)) {
+      const L = leg as unknown as Record<string, unknown>;
+      max = Math.max(max, numDurationField(L.duration));
+      walk(L.legs);
+    }
+  };
+  walk(o.legs);
+  return max;
+}
+
+function maxDurationSecondsAcrossRcRecords(records: RcCallRecord[]): number {
+  let m = 0;
+  for (const r of records) m = Math.max(m, maxDurationSecondsFromRcRecordTree(r));
+  return m;
+}
+
 function toImportedCall(
   rec: RcCallRecord,
   extraRecordings?: RecordingRef[],
@@ -430,10 +457,21 @@ function toImportedCall(
   // with the real recording win when the parent row carries a stale or empty ref (common on TELUS-style logs).
   const merged = mergeRecordingRefsInOrder(extraRecordings, extractAllRecordingsFromRcRecord(rec));
   const primary = merged[0];
-  const meta = rec as unknown as Record<string, unknown>;
+  const metaRaw = rec as unknown as Record<string, unknown>;
   const peerMetas =
     opts?.directionContextRecords?.map((r) => r as unknown as Record<string, unknown>) ?? [];
-  const disp = dispositionFromRingCentralRecordWithSessionContext(meta, direction, peerMetas);
+  const disp = dispositionFromRingCentralRecordWithSessionContext(metaRaw, direction, peerMetas);
+
+  const metaOut: Record<string, unknown> = { ...metaRaw };
+  const durationAcrossSession = maxDurationSecondsAcrossRcRecords(
+    dedupeRcRecordsById([rec, ...(opts?.directionContextRecords ?? [])]),
+  );
+  if (durationAcrossSession > 0) {
+    const existingTop = numDurationField(metaOut.duration);
+    if (durationAcrossSession > existingTop) {
+      metaOut.duration = durationAcrossSession;
+    }
+  }
 
   return {
     ringCentralCallLogId: id,
@@ -444,7 +482,7 @@ function toImportedCall(
     contactName: sanitizeTelephonyContactName(phone.name),
     recording: primary,
     recordings: merged.length > 0 ? merged : undefined,
-    metadata: meta,
+    metadata: metaOut,
     telephonyResult: disp.resultLabel,
     telephonyCallbackPending: disp.callbackPending,
     telephonyAnsweredConnected: disp.answeredConnected,
@@ -753,10 +791,15 @@ export async function syncRingCentralVoiceCallLogsFromApi(
         extra = mergeRecordingRefsInOrder(refs, extra);
       }
       const mergedSoFar = mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra);
-      if (mergedSoFar.length === 0 && w.cid) {
-        const hints = [
-          ...collectSessionHintsFromRcRecords(w.rec, detailRow),
-        ];
+      const hints = w.cid ? collectSessionHintsFromRcRecords(w.rec, detailRow) : [];
+
+      /**
+       * Always attach other account call-log rows for the same telephony session to `directionContext`.
+       * Previously we only paged the session when **no** recording URI was found; then internal outbound legs
+       * (FindMe / forward) missed the inbound fragment and fell back to `direction: Outbound` + weak recording merge.
+       */
+      if (hints.length > 0 && w.cid) {
+        let recordingStillMissing = mergedSoFar.length === 0;
         for (const h of hints) {
           const group = await loadAccountRowsForSessionHintCached(
             platform,
@@ -767,9 +810,14 @@ export async function syncRingCentralVoiceCallLogsFromApi(
             sessionRowCache,
           );
           const sib = group.filter((r) => String(r.id ?? "").trim() !== w.cid);
-          extra = mergeRecordingRefsInOrder(extra, ...sib.map((r) => extractAllRecordingsFromRcRecord(r)));
           directionContext.push(...sib);
-          if (mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length > 0) break;
+          extra = mergeRecordingRefsInOrder(extra, ...sib.map((r) => extractAllRecordingsFromRcRecord(r)));
+          if (
+            recordingStillMissing &&
+            mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length > 0
+          ) {
+            recordingStillMissing = false;
+          }
         }
       }
       const imported = toImportedCall(w.rec, extra, {
