@@ -18,6 +18,7 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CallHistoryOpenLogButton } from "@/components/call-history-open-log-button";
+import { CallLogRecordingPlayback } from "@/components/call-log-recording-playback";
 import { useLiveUiSync } from "@/components/live-ui-sync";
 import { INBOUND_CALL_HISTORY_REFRESH_EVENT } from "@/lib/call-history-refresh-event";
 import type { InboundCallHistoryRowDto } from "@/lib/inbound-call-history-dto";
@@ -29,7 +30,7 @@ import {
 import { telephonyResultLooksMissedOrUnanswered } from "@/lib/inbound-call-history-disposition";
 import { formatInboundCallHistoryDuration } from "@/lib/inbound-call-history-format";
 import { TELEPHONY_CALL_SUMMARY_PLACEHOLDER } from "@/lib/telephony-call-placeholder";
-import { Pause, PhoneIncoming, PhoneMissed, PhoneOutgoing, Play } from "lucide-react";
+import { PhoneIncoming, PhoneMissed, PhoneOutgoing } from "lucide-react";
 
 function InboundCallTypeIcon({
   direction,
@@ -290,90 +291,6 @@ function recordingLabel(count: number): { text: string; title: string } {
   return { text: String(count), title: `${count} recordings` };
 }
 
-/** Only one history-table recording plays at a time (new play pauses the previous). */
-let lastHistoryTableAudio: HTMLAudioElement | null = null;
-
-function pauseOtherHistoryTableRecordings(current: HTMLAudioElement) {
-  if (lastHistoryTableAudio && lastHistoryTableAudio !== current) {
-    lastHistoryTableAudio.pause();
-  }
-  lastHistoryTableAudio = current;
-}
-
-function recordingStreamUrl(callLogId: string, segmentIndex: number): string {
-  const id = encodeURIComponent(callLogId);
-  return segmentIndex === 0
-    ? `/api/ringcentral/recording?callLogId=${id}`
-    : `/api/ringcentral/recording?callLogId=${id}&recordingIndex=${segmentIndex}`;
-}
-
-function InboundHistoryRecordingSegmentButton({
-  callLogId,
-  segmentIndex,
-  totalSegments,
-}: {
-  callLogId: string;
-  segmentIndex: number;
-  totalSegments: number;
-}) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [playing, setPlaying] = useState(false);
-
-  useEffect(() => {
-    const el = audioRef.current;
-    return () => {
-      if (!el) return;
-      el.pause();
-      if (lastHistoryTableAudio === el) lastHistoryTableAudio = null;
-    };
-  }, []);
-
-  const ariaPlay =
-    totalSegments <= 1
-      ? "Play call recording"
-      : `Play recording part ${segmentIndex + 1} of ${totalSegments}`;
-  const ariaPause =
-    totalSegments <= 1 ? "Pause call recording" : `Pause recording part ${segmentIndex + 1}`;
-
-  return (
-    <>
-      <audio
-        ref={audioRef}
-        src={recordingStreamUrl(callLogId, segmentIndex)}
-        preload="none"
-        onPlay={() => {
-          const el = audioRef.current;
-          if (el) pauseOtherHistoryTableRecordings(el);
-          setPlaying(true);
-        }}
-        onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
-      />
-      <button
-        type="button"
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
-        aria-label={playing ? ariaPause : ariaPlay}
-        title={playing ? ariaPause : ariaPlay}
-        onClick={() => {
-          const el = audioRef.current;
-          if (!el) return;
-          if (playing) el.pause();
-          else
-            void el.play().catch((err) => {
-              console.warn("[call history] Could not play recording:", err);
-            });
-        }}
-      >
-        {playing ? (
-          <Pause className="h-3 w-3" aria-hidden />
-        ) : (
-          <Play className="ml-px h-3 w-3" aria-hidden />
-        )}
-      </button>
-    </>
-  );
-}
-
 function InboundHistoryRecordingCell({
   callLogId,
   recordingCount,
@@ -389,21 +306,15 @@ function InboundHistoryRecordingCell({
   const { title } = recordingLabel(n);
 
   return (
-    <div className="flex flex-col items-center gap-1" title={title}>
-      <div className="flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5">
-        {Array.from({ length: n }, (_, segmentIndex) => (
-          <span key={segmentIndex} className="inline-flex items-center gap-0.5">
-            {n > 1 && (
-              <span className="text-[10px] font-semibold tabular-nums text-slate-500">{segmentIndex + 1}</span>
-            )}
-            <InboundHistoryRecordingSegmentButton
-              callLogId={callLogId}
-              segmentIndex={segmentIndex}
-              totalSegments={n}
-            />
-          </span>
-        ))}
-      </div>
+    <div className="flex flex-col items-stretch gap-2" title={title}>
+      {Array.from({ length: n }, (_, segmentIndex) => (
+        <div key={segmentIndex} className="flex flex-col gap-1">
+          {n > 1 ? (
+            <span className="text-[10px] font-semibold tabular-nums text-slate-500">Part {segmentIndex + 1}</span>
+          ) : null}
+          <CallLogRecordingPlayback callLogId={callLogId} recordingIndex={segmentIndex} compact />
+        </div>
+      ))}
     </div>
   );
 }

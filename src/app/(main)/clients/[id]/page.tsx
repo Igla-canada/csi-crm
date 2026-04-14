@@ -373,9 +373,8 @@ export default async function ClientDetailPage({ params, searchParams }: ClientP
                           leadSourceOptions={leadSourceOptionsDto}
                           canRequestTranscription={caps.canConfigure || caps.canEditCallLogs}
                           canSyncRingCentralCallLog={caps.canConfigure || caps.canEditCallLogs}
-                          initialEditOpen={Boolean(
-                            openCallLogId && call.id === openCallLogId && caps.canEditCallLogs,
-                          )}
+                          /** Deep link from Call history: stay in read mode so recording + speed controls show (edit hides them). */
+                          initialEditOpen={false}
                           snapshot={{
                             id: call.id,
                             happenedAtIso: call.happenedAt.toISOString(),

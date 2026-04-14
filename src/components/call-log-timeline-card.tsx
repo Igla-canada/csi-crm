@@ -7,7 +7,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useTransition,
   type FormEvent,
@@ -20,6 +19,7 @@ import { quickUpdateCallResultAction, updateCallLogAction } from "@/app/actions"
 import type { QuickCallResultActionState, UpdateCallLogActionState } from "@/app/actions";
 
 import type { CallResultOptionDTO, LeadSourceOptionDTO, ProductServiceOptionDTO } from "@/components/log-call-form";
+import { CallLogRecordingPlayback } from "@/components/call-log-recording-playback";
 import { ProductServiceCombobox } from "@/components/product-service-combobox";
 import {
   buildBookingNotesFromCallLines,
@@ -112,8 +112,6 @@ function fieldOrDash(value: string) {
   const t = value?.trim();
   return t ? t : "—";
 }
-
-const PLAYBACK_RATES = [1, 1.5, 2] as const;
 
 function CollapsiblePanel({
   title,
@@ -221,88 +219,6 @@ function TelephonyGeminiInsightsBlock({ insights }: { insights: TelephonyGeminiI
   );
 }
 
-function TelephonyRecordingPlayer({
-  callLogId,
-  recordingIndex = 0,
-}: {
-  callLogId: string;
-  recordingIndex?: number;
-}) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const src =
-    recordingIndex > 0
-      ? `/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}&recordingIndex=${recordingIndex}`
-      : `/api/ringcentral/recording?callLogId=${encodeURIComponent(callLogId)}`;
-
-  useEffect(() => {
-    setLoadError(null);
-  }, [src]);
-
-  useEffect(() => {
-    const el = audioRef.current;
-    if (el) el.playbackRate = playbackRate;
-  }, [playbackRate]);
-
-  const applyRate = (rate: number) => {
-    setPlaybackRate(rate);
-    const el = audioRef.current;
-    if (el) el.playbackRate = rate;
-  };
-
-  const speedBtnClass = (active: boolean) =>
-    `rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
-      active
-        ? "bg-[#1e5ea8] text-white ring-1 ring-[#1e5ea8]/40"
-        : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-    }`;
-
-  return (
-    <div className="mt-2 space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-slate-500">Speed</span>
-        {PLAYBACK_RATES.map((r) => (
-          <button
-            key={r}
-            type="button"
-            onClick={() => applyRate(r)}
-            className={speedBtnClass(playbackRate === r)}
-            title={`Play at ${r}× speed`}
-          >
-            {r === 1 ? "1×" : `${r}×`}
-          </button>
-        ))}
-      </div>
-      <audio
-        key={src}
-        ref={audioRef}
-        controls
-        preload="metadata"
-        className="h-9 w-full max-w-md"
-        src={src}
-        onLoadedMetadata={(e) => {
-          setLoadError(null);
-          e.currentTarget.playbackRate = playbackRate;
-        }}
-        onError={() => {
-          setLoadError(
-            "Could not load this segment. Use Sync this call below, or Workspace → Sync call logs, and check RingCentral access.",
-          );
-        }}
-      >
-        Your browser does not support audio playback.
-      </audio>
-      {loadError ? (
-        <p className="text-xs font-medium text-amber-900" role="alert">
-          {loadError}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 type CallLogEditFormProps = {
   clientId: string;
   snapshot: CallLogCardSnapshot;
@@ -401,6 +317,25 @@ function CallLogEditForm({
           className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950"
         >
           {state.message}
+        </div>
+      ) : null}
+
+      {snapshot.hasTelephonyRecording ? (
+        <div className="mb-4 rounded-xl border border-slate-200 bg-white px-3 py-3">
+          <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-slate-600">Recording</p>
+          {Array.from(
+            { length: Math.max(1, snapshot.telephonyRecordingSegmentCount ?? 1) },
+            (_, i) => (
+              <div key={i} className={i > 0 ? "mt-4 border-t border-slate-200/90 pt-4" : "mt-2"}>
+                {(snapshot.telephonyRecordingSegmentCount ?? 1) > 1 ? (
+                  <p className="mb-2 text-[11px] font-medium text-slate-600">
+                    Part {i + 1} of {snapshot.telephonyRecordingSegmentCount}
+                  </p>
+                ) : null}
+                <CallLogRecordingPlayback callLogId={snapshot.id} recordingIndex={i} compact />
+              </div>
+            ),
+          )}
         </div>
       ) : null}
 
@@ -981,7 +916,7 @@ export function CallLogTimelineCard({
                           Part {i + 1} of {snapshot.telephonyRecordingSegmentCount}
                         </p>
                       ) : null}
-                      <TelephonyRecordingPlayer callLogId={snapshot.id} recordingIndex={i} />
+                      <CallLogRecordingPlayback callLogId={snapshot.id} recordingIndex={i} />
                     </div>
                   ),
                 )}
