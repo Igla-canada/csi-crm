@@ -1153,22 +1153,23 @@ async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
     "/restapi/v1.0/account/~/call-log",
     "/restapi/v1.0/account/~/extension/~/call-log",
   ] as const;
-  const baseQuery: Record<string, string | number> = {
-    dateFrom: dateFrom.toISOString(),
-    dateTo: dateTo.toISOString(),
-    perPage: 250,
-    type: "Voice",
-    view: "Detailed",
-  };
-  if (directionFilter) baseQuery.direction = directionFilter;
 
   /**
-   * Fast path: ask RingCentral to filter by session hint directly.
-   * This avoids missing recent rows when account paging is large and usually returns complete legs/recordings.
+   * Fast path: filter by `sessionId` / `telephonySessionId` only.
+   * RingCentral returns **400 CLG-110** if `sessionId` (or `telephonySessionId`) is combined with `dateFrom` / `dateTo`
+   * on this endpoint — those invalid calls were flooding API analytics and wasting quota toward **429** rate limits.
+   * When this path returns nothing or errors, we fall back to date-window paging below.
    */
   for (const path of sessionLookupPaths) {
     for (const key of ["sessionId", "telephonySessionId"] as const) {
-      const q: Record<string, string | number> = { ...baseQuery, [key]: want, page: 1 };
+      const q: Record<string, string | number> = {
+        [key]: want,
+        page: 1,
+        perPage: 250,
+        type: "Voice",
+        view: "Detailed",
+      };
+      if (directionFilter) q.direction = directionFilter;
       const resp = await rcSyncGet(platform, path, q);
       if (!resp.ok) continue;
       let body: RcCallLogListResponse | null = null;
