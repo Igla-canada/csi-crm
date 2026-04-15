@@ -7,6 +7,13 @@ import { syncRingCentralVoiceCallLogsFromApi } from "@/lib/ringcentral/sync-call
 import { getUserCapabilities } from "@/lib/user-privileges";
 
 /**
+ * Account call-log sync pages RingCentral, may batch-fetch per-id details, and can expand session graphs per row.
+ * Without an explicit limit, Vercel’s default serverless cap often ends the request as **504** while work is still running.
+ * Set the same ceiling in the Vercel project (Functions) if the dashboard caps this route lower than 300s.
+ */
+export const maxDuration = 300;
+
+/**
  * Pulls voice call logs from RingCentral for the inbound-history date filter (or last 48h when unfiltered),
  * upserts into the DB, then clients should refetch `/api/calls/inbound-history`.
  */

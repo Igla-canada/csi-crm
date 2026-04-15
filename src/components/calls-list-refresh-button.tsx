@@ -11,6 +11,7 @@ export function CallsListRefreshButton() {
   const searchParams = useSearchParams();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncInfo, setSyncInfo] = useState<string | null>(null);
 
   return (
     <div className="flex flex-col items-stretch gap-2 sm:items-end">
@@ -20,6 +21,7 @@ export function CallsListRefreshButton() {
         onClick={() => {
           void (async () => {
             setError(null);
+            setSyncInfo(null);
             setPending(true);
             try {
               const dateFrom = searchParams.get("dateFrom")?.trim() ?? "";
@@ -40,6 +42,12 @@ export function CallsListRefreshButton() {
                 setError(msg);
                 return;
               }
+              const skipped = typeof data?.skipped === "number" ? data.skipped : 0;
+              if (skipped > 0) {
+                setSyncInfo(
+                  `Synced, but ${skipped} RingCentral row(s) were skipped. In DevTools → Network, open this response and inspect skippedSamples (RingCentral ids + reason).`,
+                );
+              }
               window.dispatchEvent(new Event(INBOUND_CALL_HISTORY_REFRESH_EVENT));
               router.refresh();
             } catch {
@@ -56,6 +64,10 @@ export function CallsListRefreshButton() {
       {error ? (
         <p className="max-w-[260px] text-right text-[11px] leading-snug text-red-600" role="alert">
           {error}
+        </p>
+      ) : syncInfo ? (
+        <p className="max-w-[280px] text-right text-[11px] leading-snug text-amber-800" role="status">
+          {syncInfo}
         </p>
       ) : (
         <p className="max-w-[260px] text-right text-[11px] leading-snug text-slate-500">

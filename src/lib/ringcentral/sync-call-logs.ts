@@ -549,15 +549,26 @@ function earliestStartTimeAmongRecords(records: RcCallRecord[]): Date | null {
   return best != null ? new Date(best) : null;
 }
 
-function toImportedCall(
+type TryImportedCallResult =
+  | { ok: true; row: RingCentralImportedCall }
+  | { ok: false; reason: RingCentralImportSkipReason };
+
+/** Machine-readable skip reason for sync diagnostics (returned in API JSON, capped). */
+export type RingCentralImportSkipReason =
+  | "missing_ringcentral_id"
+  | "excluded_non_voice_type"
+  | "unresolved_direction"
+  | "invalid_start_time";
+
+function tryToImportedCall(
   rec: RcCallRecord,
   extraRecordings?: RecordingRef[],
   opts?: { directionContextRecords?: RcCallRecord[]; directionFallback?: CallDirection },
-): RingCentralImportedCall | null {
+): TryImportedCallResult {
   const id = String(rec.id ?? "").trim();
-  if (!id) return null;
+  if (!id) return { ok: false, reason: "missing_ringcentral_id" };
   const type = String(rec.type ?? "").toLowerCase();
-  if (isExcludedNonVoiceCallType(type)) return null;
+  if (isExcludedNonVoiceCallType(type)) return { ok: false, reason: "excluded_non_voice_type" };
   /* List requests already use `type=Voice`; do not drop rows on unknown `type` strings (TELUS / RC variants). */
 
   const phone = pickCustomerPhoneForImportWithContext(rec, opts?.directionContextRecords);
@@ -566,10 +577,10 @@ function toImportedCall(
   const inferredDir = resolveRingCentralCustomerDirection(rec, phone.digits, contextDeduped);
   const sessionChronologyDir = resolveSessionDirectionByChronology(sessionRows);
   const direction = inferredDir ?? sessionChronologyDir ?? opts?.directionFallback ?? mapDirection(rec.direction) ?? null;
-  if (!direction) return null;
+  if (!direction) return { ok: false, reason: "unresolved_direction" };
 
   const start = rec.startTime ? new Date(rec.startTime) : null;
-  if (!start || Number.isNaN(start.getTime())) return null;
+  if (!start || Number.isNaN(start.getTime())) return { ok: false, reason: "invalid_start_time" };
 
   const sessionEarliest = earliestStartTimeAmongRecords(sessionRows);
   const happenedAt =
@@ -610,19 +621,31 @@ function toImportedCall(
   }
 
   return {
-    ringCentralCallLogId: id,
-    direction,
-    happenedAt,
-    phoneNormalized: phone.digits,
-    contactPhone10: phone.callLog10,
-    contactName: sanitizeTelephonyContactName(phone.name),
-    recording: primary,
-    recordings: mergedOrdered.length > 0 ? mergedOrdered : undefined,
-    metadata: metaOut,
-    telephonyResult: disp.resultLabel,
-    telephonyCallbackPending: disp.callbackPending,
-    telephonyAnsweredConnected: disp.answeredConnected,
+    ok: true,
+    row: {
+      ringCentralCallLogId: id,
+      direction,
+      happenedAt,
+      phoneNormalized: phone.digits,
+      contactPhone10: phone.callLog10,
+      contactName: sanitizeTelephonyContactName(phone.name),
+      recording: primary,
+      recordings: mergedOrdered.length > 0 ? mergedOrdered : undefined,
+      metadata: metaOut,
+      telephonyResult: disp.resultLabel,
+      telephonyCallbackPending: disp.callbackPending,
+      telephonyAnsweredConnected: disp.answeredConnected,
+    },
   };
+}
+
+function toImportedCall(
+  rec: RcCallRecord,
+  extraRecordings?: RecordingRef[],
+  opts?: { directionContextRecords?: RcCallRecord[]; directionFallback?: CallDirection },
+): RingCentralImportedCall | null {
+  const r = tryToImportedCall(rec, extraRecordings, opts);
+  return r.ok ? r.row : null;
 }
 
 type RcPlatform = Awaited<ReturnType<typeof getRingCentralPlatform>>;
@@ -793,6 +816,8 @@ export type SyncRingCentralVoiceCallLogsResult = {
   fetched: number;
   upserted: number;
   skipped: number;
+  /** First rows we could not turn into a CRM call (for debugging missing TELUS vs CRM rows). */
+  skippedSamples: Array<{ ringCentralCallLogId: string; reason: RingCentralImportSkipReason }>;
   transcribeStarted: number;
   /** Non-fatal issues (e.g. missing RingCentral AI scope while auto-transcribe is on). */
   warnings: string[];
@@ -849,9 +874,15 @@ export async function syncRingCentralVoiceCallLogsFromApi(
     fetched: 0,
     upserted: 0,
     skipped: 0,
+    skippedSamples: [],
     transcribeStarted: 0,
     warnings: [],
     errors: [],
+  };
+
+  const pushSkipSample = (cid: string, reason: RingCentralImportSkipReason) => {
+    if (result.skippedSamples.length >= 20) return;
+    result.skippedSamples.push({ ringCentralCallLogId: cid, reason });
   };
 
   let aiPermissionWarningAdded = false;
@@ -865,7 +896,7 @@ export async function syncRingCentralVoiceCallLogsFromApi(
   const perPage = 250;
 
   for (;;) {
-    const resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", {
+    let resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", {
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       page,
@@ -873,6 +904,18 @@ export async function syncRingCentralVoiceCallLogsFromApi(
       type: "Voice",
       view: "Detailed",
     });
+
+    if (!resp.ok && resp.status >= 500 && resp.status < 600) {
+      await sleepMs(2000);
+      resp = await rcSyncGet(platform, "/restapi/v1.0/account/~/call-log", {
+        dateFrom: dateFrom.toISOString(),
+        dateTo: dateTo.toISOString(),
+        page,
+        perPage,
+        type: "Voice",
+        view: "Detailed",
+      });
+    }
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -929,11 +972,23 @@ export async function syncRingCentralVoiceCallLogsFromApi(
       }
       const hints = w.cid ? collectSessionHintsFromRcRecords(w.rec, detailRow) : [];
 
+      const recordingCountWithExtra = () =>
+        mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length;
+
+      let tried = tryToImportedCall(w.rec, extra, {
+        directionContextRecords: dedupeRcRecordsById(directionContext),
+      });
+      let imported: RingCentralImportedCall | null = tried.ok ? tried.row : null;
+
       /**
-       * BFS session graph (same as telephony webhook import): 101→102 / FindMe / park legs often use different
-       * `sessionId` vs `telephonySessionId` values — paging only the primary row’s hints misses linked rows.
+       * Cross-page session graph (101→102, FindMe, park): expensive — many RingCentral GETs per call.
+       * Run only when the fast path cannot build a row (missing direction) or still has no recording refs.
        */
-      if (hints.length > 0 && w.cid) {
+      const needsSessionGraphExpand =
+        Boolean(w.cid && hints.length > 0) &&
+        (!imported || recordingCountWithExtra() === 0);
+
+      if (needsSessionGraphExpand) {
         let expanded: RcCallRecord[] | undefined;
         for (const h of hints) {
           expanded = sessionGraphByAnyHint.get(h);
@@ -958,15 +1013,20 @@ export async function syncRingCentralVoiceCallLogsFromApi(
             }
           }
         }
-        const expandedOthers = expanded.filter((r) => String(r.id ?? "").trim() !== w.cid);
+        const expandedOthers = expanded!.filter((r) => String(r.id ?? "").trim() !== w.cid);
         directionContext.push(...expandedOthers);
         extra = mergeRecordingRefsInOrder(extra, ...expandedOthers.map((r) => extractAllRecordingsFromRcRecord(r)));
+        tried = tryToImportedCall(w.rec, extra, {
+          directionContextRecords: dedupeRcRecordsById(directionContext),
+        });
+        imported = tried.ok ? tried.row : imported;
       }
-      const imported = toImportedCall(w.rec, extra, {
-        directionContextRecords: dedupeRcRecordsById(directionContext),
-      });
+
       if (!imported) {
         result.skipped += 1;
+        if (w.cid && !tried.ok) {
+          pushSkipSample(w.cid, tried.reason);
+        }
         continue;
       }
       try {
