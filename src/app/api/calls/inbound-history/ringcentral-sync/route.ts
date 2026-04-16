@@ -5,14 +5,13 @@ import { ringCentralSyncWindowForInboundHistoryFilter } from "@/lib/crm";
 import { isRingCentralConfigured } from "@/lib/ringcentral/env";
 import { syncRingCentralVoiceCallLogsFromApi } from "@/lib/ringcentral/sync-call-logs";
 import { getUserCapabilities } from "@/lib/user-privileges";
-import { VERCEL_NODE_MAX_DURATION_SECONDS } from "@/lib/vercel-node-max-duration";
 
 /**
  * Account call-log sync pages RingCentral, may batch-fetch per-id details, and can expand session graphs per row.
  * Without an explicit limit, Vercel’s default serverless cap often ends the request as **504** while work is still running.
- * Keep in sync with Vercel **Settings → Functions → Function Max Duration** (see {@link VERCEL_NODE_MAX_DURATION_SECONDS}).
+ * Keep in sync with Vercel **Settings → Functions → Function Max Duration** (Pro max 800s).
  */
-export const maxDuration = VERCEL_NODE_MAX_DURATION_SECONDS;
+export const maxDuration = 800;
 
 /**
  * Pulls voice call logs from RingCentral for the inbound-history date filter (or last 48h when unfiltered),
