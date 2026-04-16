@@ -970,13 +970,27 @@ export async function syncRingCentralVoiceCallLogsFromApi(
           : await recordingRefsFromAccountCallLogDetail(platform, w.cid);
         extra = mergeRecordingRefsInOrder(refs, extra);
       }
+      /**
+       * List `view=Detailed` rows are sometimes shallow (FindMe / hunt tails) while the same `id` from
+       * `GET …/call-log/{id}` carries the full `legs` tree (TELUS-style 10+ minute PSTN calls). Import using
+       * the detail row as primary when ids match so duration, nested recordings, and session hints match the portal.
+       */
+      const primaryRec =
+        detailRow && String(detailRow.id ?? "").trim() === w.cid ? detailRow : w.rec;
       const hints = w.cid ? collectSessionHintsFromRcRecords(w.rec, detailRow) : [];
 
       const recordingCountWithExtra = () =>
-        mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(w.rec), extra).length;
+        mergeRecordingRefsInOrder(extractAllRecordingsFromRcRecord(primaryRec), extra).length;
 
-      let tried = tryToImportedCall(w.rec, extra, {
-        directionContextRecords: dedupeRcRecordsById(directionContext),
+      /** `tryToImportedCall` dedupes `[rec, …ctx]`; later duplicates win — never append thin `w.rec` when same id as `primaryRec`. */
+      const sameListAndPrimaryId =
+        Boolean(String(w.rec.id ?? "").trim()) &&
+        String(w.rec.id ?? "").trim() === String(primaryRec.id ?? "").trim();
+      const contextForPrimary = dedupeRcRecordsById(
+        sameListAndPrimaryId ? directionContext : [...directionContext, w.rec],
+      );
+      let tried = tryToImportedCall(primaryRec, extra, {
+        directionContextRecords: contextForPrimary,
       });
       let imported: RingCentralImportedCall | null = tried.ok ? tried.row : null;
 
@@ -985,8 +999,7 @@ export async function syncRingCentralVoiceCallLogsFromApi(
        * Run only when the fast path cannot build a row (missing direction) or still has no recording refs.
        */
       const needsSessionGraphExpand =
-        Boolean(w.cid && hints.length > 0) &&
-        (!imported || recordingCountWithExtra() === 0);
+        Boolean(w.cid && hints.length > 0) && (!imported || recordingCountWithExtra() === 0);
 
       if (needsSessionGraphExpand) {
         let expanded: RcCallRecord[] | undefined;
@@ -996,9 +1009,9 @@ export async function syncRingCentralVoiceCallLogsFromApi(
         }
         if (!expanded) {
           const seeds = dedupeRcRecordsById([
-            w.rec,
+            primaryRec,
             ...w.sessionMates,
-            ...(detailRow ? [detailRow] : []),
+            ...(detailRow && primaryRec !== detailRow ? [detailRow] : []),
           ]);
           expanded = await expandRcSessionRecordGraph(
             platform,
@@ -1016,8 +1029,10 @@ export async function syncRingCentralVoiceCallLogsFromApi(
         const expandedOthers = expanded!.filter((r) => String(r.id ?? "").trim() !== w.cid);
         directionContext.push(...expandedOthers);
         extra = mergeRecordingRefsInOrder(extra, ...expandedOthers.map((r) => extractAllRecordingsFromRcRecord(r)));
-        tried = tryToImportedCall(w.rec, extra, {
-          directionContextRecords: dedupeRcRecordsById(directionContext),
+        tried = tryToImportedCall(primaryRec, extra, {
+          directionContextRecords: dedupeRcRecordsById(
+            sameListAndPrimaryId ? directionContext : [...directionContext, w.rec],
+          ),
         });
         imported = tried.ok ? tried.row : imported;
       }
@@ -1118,14 +1133,18 @@ const TELEPHONY_END_IMPORT_HOURS_BACK = 8;
 /** Account-level voice volume can exceed a few pages; session-end import must still find the row we just hung up. */
 const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
 
+/** Single-call re-sync window around `happenedAt` (extension map + session match). ±72h was paging too much inside webhook `after()`. */
+const SINGLE_CALL_LOG_RC_WINDOW_HOURS = 24;
+
 /**
  * Re-fetch the CRM call log from RingCentral at these offsets after telephony session-end import.
  * Recording metadata often appears well after the call row exists; the first import may show "completed"
  * with no `contentUri` even when a recording will exist.
+ *
+ * Keep total sleep within Vercel's serverless cap: `after()` work on `/api/ringcentral/telephony-webhook`
+ * shares one invocation budget (~300s on Hobby). Longer tails are covered by Workspace → Sync call logs.
  */
-export const TELEPHONY_RECORDING_REFRESH_DELAY_SEQUENCE_MS = [
-  12_000, 28_000, 72_000, 130_000, 240_000,
-] as const;
+export const TELEPHONY_RECORDING_REFRESH_DELAY_SEQUENCE_MS = [12_000, 28_000, 72_000] as const;
 
 export function buildTelephonyRecordingRefreshJobs(
   callLogId: string,
@@ -1605,8 +1624,8 @@ async function syncSingleRingCentralCallLogByCrmIdInner(
   }
 
   const now = new Date();
-  let windowStart = subHours(happenedAt, 72);
-  let windowEnd = addHours(happenedAt, 72);
+  let windowStart = subHours(happenedAt, SINGLE_CALL_LOG_RC_WINDOW_HOURS);
+  let windowEnd = addHours(happenedAt, SINGLE_CALL_LOG_RC_WINDOW_HOURS);
   if (windowEnd > now) windowEnd = now;
   if (windowStart > windowEnd) windowStart = subHours(windowEnd, 1);
 
@@ -1756,12 +1775,17 @@ function scoreRcRowForTelephonyPrimary(r: RcCallRecord, stubDigitsNorm: string):
   s += Math.min(dur, 600);
   const resRaw = topLevelResultRaw(r);
   const res = resRaw.toLowerCase().replace(/_/g, " ");
+  const action = topLevelActionRaw(r).toLowerCase();
   if (ringCentralResultLooksAnsweredConnectedRaw(resRaw)) s += 220;
   if (res.includes("call connected")) s += 120;
   if (res.includes("accepted")) s += 80;
-  if ((res.includes("stopped") || res.includes("missed")) && dur <= 12) s -= 260;
+  if (
+    (res.includes("stopped") || res.includes("missed") || action.includes("stopped") || action.includes("missed")) &&
+    dur <= 12
+  ) {
+    s -= 260;
+  }
   if ((res.includes("no answer") || res.includes("noanswer")) && dur <= 12) s -= 220;
-  const action = topLevelActionRaw(r).toLowerCase();
   if ((action.includes("findme") || action.includes("park")) && dur <= 15) s -= 100;
   return s;
 }
