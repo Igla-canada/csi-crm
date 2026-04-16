@@ -4,6 +4,9 @@ import { getCurrentUserForApi } from "@/lib/auth";
 import { syncRingCentralVoiceCallLogsFromApi } from "@/lib/ringcentral/sync-call-logs";
 import { isRingCentralConfigured } from "@/lib/ringcentral/env";
 import { getUserCapabilities } from "@/lib/user-privileges";
+import { VERCEL_NODE_MAX_DURATION_SECONDS } from "@/lib/vercel-node-max-duration";
+
+export const maxDuration = VERCEL_NODE_MAX_DURATION_SECONDS;
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUserForApi();

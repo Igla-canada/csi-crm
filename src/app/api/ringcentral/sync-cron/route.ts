@@ -2,6 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { isRingCentralConfigured } from "@/lib/ringcentral/env";
 import { syncRingCentralVoiceCallLogsFromApi } from "@/lib/ringcentral/sync-call-logs";
+import { VERCEL_NODE_MAX_DURATION_SECONDS } from "@/lib/vercel-node-max-duration";
+
+export const maxDuration = VERCEL_NODE_MAX_DURATION_SECONDS;
 
 function cronSecret(): string | null {
   const a = process.env.CRON_SECRET?.trim();

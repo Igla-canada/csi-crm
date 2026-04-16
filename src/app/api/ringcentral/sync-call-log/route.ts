@@ -4,6 +4,9 @@ import { getCurrentUserForApi } from "@/lib/auth";
 import { isRingCentralConfigured } from "@/lib/ringcentral/env";
 import { syncSingleRingCentralCallLogByCrmId } from "@/lib/ringcentral/sync-call-logs";
 import { getUserCapabilities } from "@/lib/user-privileges";
+import { VERCEL_NODE_MAX_DURATION_SECONDS } from "@/lib/vercel-node-max-duration";
+
+export const maxDuration = VERCEL_NODE_MAX_DURATION_SECONDS;
 
 /**
  * Re-fetches one call log from RingCentral (by stored RingCentral call id or `webhook-ts:` session placeholder)

@@ -5,12 +5,14 @@ import {
   applyRingCentralTelephonyWebhookBody,
   finalizeDeferredTelephonySessionEnd,
 } from "@/lib/ringcentral/telephony-session-notify";
+import { VERCEL_NODE_MAX_DURATION_SECONDS } from "@/lib/vercel-node-max-duration";
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 export const dynamic = "force-dynamic";
+export const maxDuration = VERCEL_NODE_MAX_DURATION_SECONDS;
 
 /**
  * Probes (browser, ngrok, uptime checks) often GET the webhook URL. RingCentral itself delivers notifications via POST.
