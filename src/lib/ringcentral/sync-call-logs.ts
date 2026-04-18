@@ -1561,16 +1561,34 @@ async function recordingRefsFromAccountCallLogDetail(platform: RcPlatform, callL
 
 export type SyncSingleRingCentralCallLogResult =
   | { ok: true }
-  | { ok: false; error: string };
+  | { ok: false; error: string; rateLimited?: boolean };
+
+/** True when RingCentral (or our wrapper) reports throttling — callers should back off globally, not retry immediately. */
+export function ringCentralSyncErrorLooksRateLimited(message: string): boolean {
+  const t = message.toLowerCase();
+  return (
+    /\b429\b/.test(t) ||
+    /\bcmn[-_]429\b/.test(t) ||
+    /\brequest\s+rate\s+exceeded\b/.test(t) ||
+    /\btoo\s+many\s+requests\b/.test(t) ||
+    /\binbound_rate_limit\b/.test(t) ||
+    /\boutbound_rate_limit\b/.test(t)
+  );
+}
 
 /** Re-fetch one CRM call log from RingCentral by stored `ringCentralCallLogId` (real id or `webhook-ts:…` session). */
 export async function syncSingleRingCentralCallLogByCrmId(crmCallLogId: string): Promise<SyncSingleRingCentralCallLogResult> {
   try {
-    return await syncSingleRingCentralCallLogByCrmIdInner(crmCallLogId);
+    const r = await syncSingleRingCentralCallLogByCrmIdInner(crmCallLogId);
+    if (r.ok) return r;
+    return {
+      ...r,
+      rateLimited: ringCentralSyncErrorLooksRateLimited(r.error),
+    };
   } catch (e) {
     console.error("[sync-single-call-log]", crmCallLogId, e);
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: msg.trim() || "RingCentral sync failed unexpectedly." };
+    const msg = (e instanceof Error ? e.message : String(e)).trim() || "RingCentral sync failed unexpectedly.";
+    return { ok: false, error: msg, rateLimited: ringCentralSyncErrorLooksRateLimited(msg) };
   }
 }
 

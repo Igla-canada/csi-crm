@@ -23,7 +23,7 @@ function authorized(req: NextRequest): boolean {
 }
 
 async function parseLimit(req: NextRequest): Promise<number> {
-  let limit = 25;
+  let limit = 5;
   try {
     if (req.method === "POST") {
       const body = await req.json().catch(() => null);

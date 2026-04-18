@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/ringcentral/recording-enrichment-cron",
-      "schedule": "*/10 * * * *"
+      "schedule": "*/15 * * * *"
     }
   ]
 }

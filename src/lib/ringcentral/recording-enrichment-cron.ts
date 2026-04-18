@@ -3,14 +3,34 @@ import "server-only";
 import { parseTelephonyRecordingRefsJson, WEBHOOK_TELEPHONY_LOG_ID_PREFIX } from "@/lib/crm";
 import { getSupabaseAdmin, tables } from "@/lib/db";
 import { getRingCentralAutoTranscribe } from "@/lib/ringcentral/env";
-import { syncSingleRingCentralCallLogByCrmId } from "@/lib/ringcentral/sync-call-logs";
+import {
+  syncSingleRingCentralCallLogByCrmId,
+  type SyncSingleRingCentralCallLogResult,
+} from "@/lib/ringcentral/sync-call-logs";
 import { shouldStartAutoTranscriptionForCallLog, startRingCentralSpeechToTextForCallLog } from "@/lib/ringcentral/transcribe";
 
 const MIN_END_AGE_MS = 3 * 60 * 1000;
 const LOOKBACK_DAYS = 30;
-const DEFAULT_BATCH = 25;
+/** Few rows per run — each `syncSingle` fans out to many RingCentral call-log GETs (Heavy tier ~10/min). */
+const DEFAULT_BATCH = 5;
 const MAX_ATTEMPTS_BEFORE_NONE = 12;
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
+/** After RingCentral 429, wait at least this long before this row is eligible again (penalty interval is often ~60s; stay conservative). */
+const MIN_BACKOFF_AFTER_RATE_LIMIT_MS = 10 * 60 * 1000;
+
+function interRowDelayMs(): number {
+  const raw = process.env.RECORDING_ENRICHMENT_INTER_ROW_DELAY_MS?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0) return Math.min(n, 120_000);
+  }
+  /** Space out runs so one cron invocation does not dump dozens of call-log reads into the same Heavy bucket. */
+  return 8000;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 type EnrichRow = {
   id: string;
@@ -82,7 +102,7 @@ async function fetchEligibleRows(limit: number): Promise<EnrichRow[]> {
 
 async function applyEnrichmentOutcome(
   callLogId: string,
-  args: { syncOk: boolean; priorAttempts: number; hadRecordingBefore: boolean },
+  args: { syncOk: boolean; priorAttempts: number; hadRecordingBefore: boolean; rateLimited?: boolean },
 ): Promise<void> {
   const sb = getSupabaseAdmin();
   const { data: row, error } = await sb
@@ -116,13 +136,15 @@ async function applyEnrichmentOutcome(
   const rcKey = String((row as { ringCentralCallLogId?: string }).ringCentralCallLogId ?? "").trim();
 
   if (!args.syncOk) {
+    const baseWait = enrichBackoffMs(nextAttempt);
+    const waitMs = args.rateLimited ? Math.max(baseWait, MIN_BACKOFF_AFTER_RATE_LIMIT_MS) : baseWait;
     await sb
       .from(tables.CallLog)
       .update({
         telephonyRecordingEnrichStatus: "retry",
         telephonyRecordingEnrichAttempts: nextAttempt,
         telephonyRecordingEnrichLastAt: lastAt,
-        telephonyRecordingEnrichNextAt: new Date(Date.now() + enrichBackoffMs(nextAttempt)).toISOString(),
+        telephonyRecordingEnrichNextAt: new Date(Date.now() + waitMs).toISOString(),
       })
       .eq("id", callLogId);
     return;
@@ -185,16 +207,23 @@ export async function runTelephonyRecordingEnrichmentCron(options?: { limit?: nu
   let retrying = 0;
   let failures = 0;
 
-  for (const r of rows) {
+  const rowDelay = interRowDelayMs();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    if (i > 0 && rowDelay > 0) {
+      await sleepMs(rowDelay);
+    }
     const hadRecordingBefore = rowHasTelephonyRecording(r);
     const priorAttempts = Number(r.telephonyRecordingEnrichAttempts ?? 0) || 0;
 
     try {
-      const result = await syncSingleRingCentralCallLogByCrmId(r.id);
+      const result: SyncSingleRingCentralCallLogResult = await syncSingleRingCentralCallLogByCrmId(r.id);
+      const rateLimited = result.ok === false && Boolean(result.rateLimited);
       await applyEnrichmentOutcome(r.id, {
         syncOk: result.ok,
         priorAttempts,
         hadRecordingBefore,
+        rateLimited,
       });
 
       const sb = getSupabaseAdmin();
@@ -215,6 +244,7 @@ export async function runTelephonyRecordingEnrichmentCron(options?: { limit?: nu
           syncOk: false,
           priorAttempts,
           hadRecordingBefore,
+          rateLimited: false,
         });
       } catch {
         /* ignore */
