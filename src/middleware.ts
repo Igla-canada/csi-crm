@@ -12,6 +12,7 @@ function isPublicPath(pathname: string) {
     pathname.startsWith("/api/ringcentral/telephony-webhook") ||
     pathname.startsWith("/api/ringcentral/ai-webhook") ||
     pathname.startsWith("/api/ringcentral/sync-cron") ||
+    pathname.startsWith("/api/ringcentral/recording-enrichment-cron") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     /\.(ico|png|jpg|jpeg|svg|webp|gif)$/i.test(pathname)

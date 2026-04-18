@@ -1137,24 +1137,6 @@ const TELEPHONY_END_IMPORT_MAX_PAGES = 40;
 const SINGLE_CALL_LOG_RC_WINDOW_HOURS = 24;
 
 /**
- * Re-fetch the CRM call log from RingCentral at these offsets after telephony session-end import.
- * Recording metadata often appears well after the call row exists; the first import may show "completed"
- * with no `contentUri` even when a recording will exist.
- *
- * Keep total sleep within Vercel's serverless cap: `after()` work on `/api/ringcentral/telephony-webhook`
- * shares one invocation budget (~300s on Hobby). Longer tails are covered by Workspace → Sync call logs.
- */
-export const TELEPHONY_RECORDING_REFRESH_DELAY_SEQUENCE_MS = [12_000, 28_000, 72_000] as const;
-
-export function buildTelephonyRecordingRefreshJobs(
-  callLogId: string,
-): Array<{ callLogId: string; delayMs: number }> {
-  const id = callLogId.trim();
-  if (!id) return [];
-  return TELEPHONY_RECORDING_REFRESH_DELAY_SEQUENCE_MS.map((delayMs) => ({ callLogId: id, delayMs }));
-}
-
-/**
  * Pages account call-log until `sessionId` matches (or pages exhaust). Used for webhook-time import and per-call refresh.
  */
 async function loadAccountCallLogRecordsMatchingTelephonySessionInWindow(

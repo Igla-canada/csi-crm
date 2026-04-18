@@ -160,6 +160,10 @@ CREATE TABLE "CallLog" (
     "telephonyGeminiPending" BOOLEAN NOT NULL DEFAULT false,
     "telephonyResult" TEXT,
     "telephonyCallbackPending" BOOLEAN NOT NULL DEFAULT false,
+    "telephonyRecordingEnrichStatus" TEXT,
+    "telephonyRecordingEnrichAttempts" INTEGER NOT NULL DEFAULT 0,
+    "telephonyRecordingEnrichLastAt" TIMESTAMP(3),
+    "telephonyRecordingEnrichNextAt" TIMESTAMP(3),
     "openedFromCallHistoryAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "CallLog_pkey" PRIMARY KEY ("id"),
@@ -175,6 +179,7 @@ CREATE INDEX "CallLog_clientId_null_phone_idx" ON "CallLog"("contactPhoneNormali
 CREATE INDEX "CallLog_userId_happenedAt_idx" ON "CallLog"("userId", "happenedAt");
 CREATE INDEX "CallLog_followUpAt_idx" ON "CallLog"("followUpAt");
 CREATE INDEX "CallLog_telephonyCallbackPending_idx" ON "CallLog"("happenedAt" DESC) WHERE "telephonyCallbackPending" = true;
+CREATE INDEX "CallLog_telephonyRecordingEnrich_cron_idx" ON "CallLog"("telephonyRecordingEnrichNextAt", "happenedAt" DESC) WHERE "ringCentralCallLogId" IS NOT NULL AND "telephonyRecordingEnrichStatus" IN ('pending', 'retry');
 
 CREATE TABLE "Opportunity" (
     "id" TEXT NOT NULL,

@@ -14,10 +14,7 @@ import {
 import type { ExtensionActiveCallSummary } from "@/lib/ringcentral/fetch-extension-active-calls";
 import { getTelephonySessionEndGraceMs } from "@/lib/ringcentral/env";
 import { ringCentralResultLooksAnsweredConnectedRaw } from "@/lib/ringcentral/call-result";
-import {
-  buildTelephonyRecordingRefreshJobs,
-  importCallLogForTelephonySessionEnd,
-} from "@/lib/ringcentral/sync-call-logs";
+import { importCallLogForTelephonySessionEnd } from "@/lib/ringcentral/sync-call-logs";
 import {
   deleteTelephonyLiveSession,
   getTelephonyLiveSessionRow,
@@ -396,14 +393,11 @@ export async function applyRingCentralTelephonyWebhookBody(
 ): Promise<{
   processed: number;
   payloadsSeen: number;
-  /** Deferred `syncSingleRingCentralCallLogByCrmId` runs (RingCentral recording URLs often lag hangup). */
-  recordingRefreshJobs: Array<{ callLogId: string; delayMs: number }>;
   /** Deferred CRM import after session-end grace (avoids premature Missed while calls forward). */
   sessionFinalizeJobs: Array<{ sessionId: string; token: string; delayMs: number }>;
 }> {
   const payloads = payloadsWithEventSessionFallback(envelope, extractSessionPayloads(envelope));
   let processed = 0;
-  const recordingRefreshJobs: Array<{ callLogId: string; delayMs: number }> = [];
   const sessionFinalizeJobs: Array<{ sessionId: string; token: string; delayMs: number }> = [];
 
   for (const payload of payloads) {
@@ -423,10 +417,7 @@ export async function applyRingCentralTelephonyWebhookBody(
       if (graceMs <= 0) {
         await deleteTelephonyLiveSession(payload.sessionId);
         try {
-          const outcome = await importCallLogForTelephonySessionEnd(stub);
-          if (outcome) {
-            recordingRefreshJobs.push(...buildTelephonyRecordingRefreshJobs(outcome.callLogId));
-          }
+          await importCallLogForTelephonySessionEnd(stub);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.warn("[telephony-webhook] importCallLogForTelephonySessionEnd failed:", msg);
@@ -497,7 +488,7 @@ export async function applyRingCentralTelephonyWebhookBody(
     processed += 1;
   }
 
-  return { processed, payloadsSeen: payloads.length, recordingRefreshJobs, sessionFinalizeJobs };
+  return { processed, payloadsSeen: payloads.length, sessionFinalizeJobs };
 }
 
 export function telephonyLiveRowsToDockSummaries(rows: TelephonyLiveSessionRow[]): ExtensionActiveCallSummary[] {
@@ -515,35 +506,27 @@ export function telephonyLiveRowsToDockSummaries(rows: TelephonyLiveSessionRow[]
  * Runs after {@link getTelephonySessionEndGraceMs}: import call log and clear the live row.
  * Idempotent if the session row was superseded (token mismatch).
  */
-export async function finalizeDeferredTelephonySessionEnd(
-  sessionId: string,
-  token: string,
-): Promise<{ recordingRefreshJobs: Array<{ callLogId: string; delayMs: number }> }> {
-  const recordingRefreshJobs: Array<{ callLogId: string; delayMs: number }> = [];
+export async function finalizeDeferredTelephonySessionEnd(sessionId: string, token: string): Promise<void> {
   const row = await getTelephonyLiveSessionRow(sessionId);
   if (!row?.endingToken || row.endingToken.trim() !== token.trim()) {
-    return { recordingRefreshJobs };
+    return;
   }
   const rawJson = row.endingStubJson;
   if (!rawJson?.trim()) {
     await deleteTelephonyLiveSession(sessionId);
-    return { recordingRefreshJobs };
+    return;
   }
   const stub = persistedJsonToStub(rawJson);
   if (!stub) {
     await deleteTelephonyLiveSession(sessionId);
-    return { recordingRefreshJobs };
+    return;
   }
   try {
-    const outcome = await importCallLogForTelephonySessionEnd(stub);
-    if (outcome) {
-      recordingRefreshJobs.push(...buildTelephonyRecordingRefreshJobs(outcome.callLogId));
-    }
+    await importCallLogForTelephonySessionEnd(stub);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn("[telephony-webhook] finalizeDeferredTelephonySessionEnd import failed:", msg);
   } finally {
     await deleteTelephonyLiveSession(sessionId);
   }
-  return { recordingRefreshJobs };
 }

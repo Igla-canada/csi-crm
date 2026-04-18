@@ -480,6 +480,39 @@ function mergeTelephonyRecordingRefs(
   return merged.length > 0 ? merged : null;
 }
 
+/** Keeps `telephonyRecordingEnrichStatus` aligned when a RingCentral import updates recording refs / URI. */
+function applyTelephonyRecordingEnrichFieldsToRcImportPatch(
+  patch: Record<string, unknown>,
+  prior: {
+    telephonyRecordingEnrichStatus?: string | null;
+    telephonyRecordingContentUri?: string | null;
+    telephonyRecordingRefs?: unknown;
+  },
+): void {
+  const uri =
+    patch.telephonyRecordingContentUri !== undefined
+      ? String((patch.telephonyRecordingContentUri as string | null) ?? "").trim()
+      : String(prior.telephonyRecordingContentUri ?? "").trim();
+  const refsRaw =
+    patch.telephonyRecordingRefs !== undefined ? patch.telephonyRecordingRefs : prior.telephonyRecordingRefs;
+  const refs = parseTelephonyRecordingRefsJson(refsRaw);
+  const has = Boolean(uri) || Boolean(refs && refs.length > 0);
+  if (has) {
+    patch.telephonyRecordingEnrichStatus = "ready";
+    patch.telephonyRecordingEnrichNextAt = null;
+    return;
+  }
+  const st = prior.telephonyRecordingEnrichStatus ?? null;
+  if (st === "none" || st === "retry") return;
+  if (st === "ready") {
+    patch.telephonyRecordingEnrichStatus = "pending";
+    patch.telephonyRecordingEnrichNextAt = null;
+    return;
+  }
+  patch.telephonyRecordingEnrichStatus = "pending";
+  patch.telephonyRecordingEnrichNextAt = null;
+}
+
 async function hydrateCallLogs(rows: Record<string, unknown>[]): Promise<CallLogWithRelations[]> {
   if (!rows.length) return [];
   const clientIds = [...new Set(rows.map((r) => r.clientId as string | null).filter(Boolean))] as string[];
@@ -2906,7 +2939,9 @@ export async function upsertCallLogFromRingCentralImport(
 
   const { data: existing } = await sb()
     .from(tables.CallLog)
-    .select("id,clientId,telephonyDraft,summary,telephonyRecordingRefs")
+    .select(
+      "id,clientId,telephonyDraft,summary,telephonyRecordingRefs,telephonyRecordingContentUri,telephonyRecordingEnrichStatus",
+    )
     .eq("ringCentralCallLogId", row.ringCentralCallLogId)
     .maybeSingle();
 
@@ -2948,6 +2983,9 @@ export async function upsertCallLogFromRingCentralImport(
     telephonyResult: row.telephonyResult,
     telephonyCallbackPending: effectiveCallbackPending,
   };
+  const insertHasRecording =
+    Boolean(String(insertTelephonyFields.telephonyRecordingContentUri ?? "").trim()) ||
+    Boolean(persistedRefs && persistedRefs.length > 0);
 
   if (existing) {
     const patch: Record<string, unknown> = {
@@ -2984,6 +3022,15 @@ export async function upsertCallLogFromRingCentralImport(
     }
     if (!existing.telephonyDraft) {
       patch.telephonyCallbackPending = false;
+    }
+    if (row.recordings !== undefined || row.recording) {
+      applyTelephonyRecordingEnrichFieldsToRcImportPatch(patch, {
+        telephonyRecordingEnrichStatus: (existing as { telephonyRecordingEnrichStatus?: string | null })
+          .telephonyRecordingEnrichStatus,
+        telephonyRecordingContentUri: (existing as { telephonyRecordingContentUri?: string | null })
+          .telephonyRecordingContentUri,
+        telephonyRecordingRefs: existing.telephonyRecordingRefs,
+      });
     }
     const { error: uErr } = await sb().from(tables.CallLog).update(patch).eq("id", existing.id);
     if (uErr) throw uErr;
@@ -3032,6 +3079,10 @@ export async function upsertCallLogFromRingCentralImport(
     ringCentralCallLogId: row.ringCentralCallLogId,
     telephonyDraft: true,
     ...insertTelephonyFields,
+    telephonyRecordingEnrichStatus: insertHasRecording ? "ready" : "pending",
+    telephonyRecordingEnrichAttempts: 0,
+    telephonyRecordingEnrichLastAt: null,
+    telephonyRecordingEnrichNextAt: null,
   });
   if (iErr) throw iErr;
   const reconcileIds = await collectClientIdsForTelephonyReconciliation(row, clientId);
@@ -3052,7 +3103,9 @@ export async function applyRingCentralImportToExistingCallLogById(
 ): Promise<void> {
   const { data: existing, error: exErr } = await sb()
     .from(tables.CallLog)
-    .select("id,clientId,telephonyDraft,summary,telephonyRecordingRefs")
+    .select(
+      "id,clientId,telephonyDraft,summary,telephonyRecordingRefs,telephonyRecordingContentUri,telephonyRecordingEnrichStatus",
+    )
     .eq("id", crmCallLogId)
     .maybeSingle();
   if (exErr) throw exErr;
@@ -3096,6 +3149,15 @@ export async function applyRingCentralImportToExistingCallLogById(
   if (Boolean((existing as { telephonyDraft?: boolean }).telephonyDraft) || isPlaceholderSummary) {
     patch.outcomeCode = effectiveCallbackPending ? TELEPHONY_CALLBACK_OUTCOME_CODE : TELEPHONY_IMPORT_OUTCOME_CODE;
     patch.followUpAt = null;
+  }
+  if (row.recordings !== undefined || row.recording) {
+    applyTelephonyRecordingEnrichFieldsToRcImportPatch(patch, {
+      telephonyRecordingEnrichStatus: (existing as { telephonyRecordingEnrichStatus?: string | null })
+        .telephonyRecordingEnrichStatus,
+      telephonyRecordingContentUri: (existing as { telephonyRecordingContentUri?: string | null })
+        .telephonyRecordingContentUri,
+      telephonyRecordingRefs: existing.telephonyRecordingRefs,
+    });
   }
   const { error: uErr } = await sb().from(tables.CallLog).update(patch).eq("id", crmCallLogId);
   if (uErr) throw uErr;

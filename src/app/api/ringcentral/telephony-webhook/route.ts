@@ -32,6 +32,8 @@ export async function HEAD() {
  * Inbound-only: RingCentral pushes telephony session **notifications** here. We parse and mirror state into our DB for
  * the live dock. We do not call RingCentral back to control calls (read-only observation).
  * Must be reachable at a public HTTPS URL. On subscription setup, RingCentral sends `Validation-Token`; echo it in the response header.
+ *
+ * Recording URIs are filled by {@link runTelephonyRecordingEnrichmentCron} (Vercel Cron) instead of chaining `after()` syncs here.
  */
 export async function POST(req: NextRequest) {
   const validation = req.headers.get("validation-token");
@@ -50,46 +52,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { processed, payloadsSeen, recordingRefreshJobs, sessionFinalizeJobs } =
-      await applyRingCentralTelephonyWebhookBody(body);
+    const { processed, payloadsSeen, sessionFinalizeJobs } = await applyRingCentralTelephonyWebhookBody(body);
     for (const job of sessionFinalizeJobs) {
       after(async () => {
         await sleepMs(job.delayMs);
         try {
-          const { recordingRefreshJobs: postFinalizeRecording } = await finalizeDeferredTelephonySessionEnd(
-            job.sessionId,
-            job.token,
-          );
-          for (const rj of postFinalizeRecording) {
-            after(async () => {
-              await sleepMs(rj.delayMs);
-              try {
-                const { syncSingleRingCentralCallLogByCrmId } = await import("@/lib/ringcentral/sync-call-logs");
-                const result = await syncSingleRingCentralCallLogByCrmId(rj.callLogId);
-                if (!result.ok && process.env.NODE_ENV === "development") {
-                  console.info("[telephony-webhook] deferred recording refresh:", rj.callLogId, result.error);
-                }
-              } catch (e) {
-                console.warn("[telephony-webhook] deferred recording refresh failed:", e);
-              }
-            });
-          }
+          await finalizeDeferredTelephonySessionEnd(job.sessionId, job.token);
         } catch (e) {
           console.warn("[telephony-webhook] deferred session finalize failed:", e);
-        }
-      });
-    }
-    for (const job of recordingRefreshJobs) {
-      after(async () => {
-        await sleepMs(job.delayMs);
-        try {
-          const { syncSingleRingCentralCallLogByCrmId } = await import("@/lib/ringcentral/sync-call-logs");
-          const result = await syncSingleRingCentralCallLogByCrmId(job.callLogId);
-          if (!result.ok && process.env.NODE_ENV === "development") {
-            console.info("[telephony-webhook] deferred recording refresh:", job.callLogId, result.error);
-          }
-        } catch (e) {
-          console.warn("[telephony-webhook] deferred recording refresh failed:", e);
         }
       });
     }
