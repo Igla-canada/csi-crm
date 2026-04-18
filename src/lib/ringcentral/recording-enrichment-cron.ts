@@ -25,7 +25,7 @@ function interRowDelayMs(): number {
     if (Number.isFinite(n) && n >= 0) return Math.min(n, 120_000);
   }
   /** Space out runs so one cron invocation does not dump dozens of call-log reads into the same Heavy bucket. */
-  return 8000;
+  return 12_000;
 }
 
 function sleepMs(ms: number): Promise<void> {

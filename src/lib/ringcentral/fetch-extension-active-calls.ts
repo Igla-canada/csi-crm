@@ -7,10 +7,15 @@ import {
   type RcPhoneEndpoint,
 } from "@/lib/ringcentral/customer-phone-from-rc-parties";
 import { getExtensionActiveCallsPollPlan } from "@/lib/ringcentral/env";
+import {
+  markRingCentralRestCallDone,
+  paceBeforeRingCentralRestCall,
+  retryAfterDelayMsFromHeaders,
+} from "@/lib/ringcentral/rc-request-pace";
 import { getRingCentralPlatform } from "@/lib/ringcentral/platform";
 
 /** Space out multi-extension active-calls GETs to avoid burst rate limits (4+ extensions). */
-const BETWEEN_EXTENSION_POLL_MS = 800;
+const BETWEEN_EXTENSION_POLL_MS = 2000;
 
 const MIN_DIGITS_LOOKUP = 7;
 
@@ -151,27 +156,49 @@ function mapRecordsToSummaries(records: RcActiveRecord[]): {
   return { summaries: out, skippedEnded };
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function fetchActiveCallsForSinglePath(
   platform: Awaited<ReturnType<typeof getRingCentralPlatform>>,
   path: string,
 ): Promise<{ summaries: ExtensionActiveCallSummary[]; rawRecordCount: number; skippedEnded: number }> {
-  let resp: Awaited<ReturnType<typeof platform.get>>;
-  try {
-    resp = await platform.get(path);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const st =
-      /parameter\s*\[extensionId\]\s*is not found|extensionid.*not found/i.test(msg) ? 404 : 502;
-    throw new Error(`RingCentral active-calls failed (${st}): ${msg.slice(0, 400)}`);
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await paceBeforeRingCentralRestCall();
+    let resp: Awaited<ReturnType<typeof platform.get>>;
+    try {
+      resp = await platform.get(path);
+    } catch (e) {
+      markRingCentralRestCallDone();
+      const msg = e instanceof Error ? e.message : String(e);
+      const st =
+        /parameter\s*\[extensionId\]\s*is not found|extensionid.*not found/i.test(msg) ? 404 : 502;
+      throw new Error(`RingCentral active-calls failed (${st}): ${msg.slice(0, 400)}`);
+    }
+    markRingCentralRestCallDone();
+
+    if (resp.status === 429 && attempt < maxAttempts - 1) {
+      await resp.text().catch(() => "");
+      const fromHeader = retryAfterDelayMsFromHeaders(resp.headers);
+      const stagger = 1800 * (attempt + 1);
+      let waitMs = Math.max(stagger, fromHeader ?? 0, 55_000);
+      waitMs = Math.min(waitMs, 120_000);
+      await sleepMs(waitMs);
+      continue;
+    }
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`RingCentral active-calls failed (${resp.status}): ${text.slice(0, 400)}`);
+    }
+    const body = (await resp.json()) as RcActiveListResponse;
+    const records = body.records ?? [];
+    const { summaries, skippedEnded } = mapRecordsToSummaries(records);
+    return { summaries, rawRecordCount: records.length, skippedEnded };
   }
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`RingCentral active-calls failed (${resp.status}): ${text.slice(0, 400)}`);
-  }
-  const body = (await resp.json()) as RcActiveListResponse;
-  const records = body.records ?? [];
-  const { summaries, skippedEnded } = mapRecordsToSummaries(records);
-  return { summaries, rawRecordCount: records.length, skippedEnded };
+  throw new Error("RingCentral active-calls failed (429): exhausted retries.");
 }
 
 /**

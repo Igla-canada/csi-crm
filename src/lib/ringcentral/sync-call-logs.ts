@@ -29,6 +29,11 @@ import {
   shouldStartAutoTranscriptionForCallLog,
   startRingCentralSpeechToTextForCallLog,
 } from "@/lib/ringcentral/transcribe";
+import {
+  markRingCentralRestCallDone,
+  paceBeforeRingCentralRestCall,
+  retryAfterDelayMsFromHeaders,
+} from "@/lib/ringcentral/rc-request-pace";
 
 const MIN_DIGITS_LOOKUP = 7;
 
@@ -650,23 +655,8 @@ function toImportedCall(
 
 type RcPlatform = Awaited<ReturnType<typeof getRingCentralPlatform>>;
 
-/** RingCentral rejects tight bursts of REST calls with "Request rate exceeded" — pace sync traffic. */
-const RC_SYNC_MIN_REQUEST_INTERVAL_MS = 350;
-
-let rcSyncLastRequestEndedAt = 0;
-
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function paceRingCentralSyncRequest(): Promise<void> {
-  const now = Date.now();
-  const wait = rcSyncLastRequestEndedAt + RC_SYNC_MIN_REQUEST_INTERVAL_MS - now;
-  if (wait > 0) await sleepMs(wait);
-}
-
-function touchRingCentralSyncRequestEnd(): void {
-  rcSyncLastRequestEndedAt = Date.now();
 }
 
 /**
@@ -686,9 +676,9 @@ function ringCentralSdkErrorResponse(e: unknown): Response | null {
  * Throttled GET for call-log sync. Retries with backoff on HTTP 429 (per-minute / burst limits).
  */
 async function rcSyncGet(platform: RcPlatform, url: string, query?: unknown): Promise<Response> {
-  const maxAttempts = 5;
+  const maxAttempts = 6;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await paceRingCentralSyncRequest();
+    await paceBeforeRingCentralRestCall();
     let resp: Response;
     try {
       resp = query !== undefined ? await platform.get(url, query) : await platform.get(url);
@@ -697,20 +687,17 @@ async function rcSyncGet(platform: RcPlatform, url: string, query?: unknown): Pr
       if (!r) throw e;
       resp = r;
     }
-    touchRingCentralSyncRequestEnd();
+    markRingCentralRestCallDone();
 
     if (resp.status !== 429 || attempt === maxAttempts - 1) {
       return resp;
     }
 
-    let waitMs = 1800 * (attempt + 1);
-    const ra = resp.headers.get("retry-after");
-    if (ra) {
-      const sec = parseInt(ra, 10);
-      if (Number.isFinite(sec) && sec > 0) {
-        waitMs = Math.min(sec * 1000, 60_000);
-      }
-    }
+    /** Honor Retry-After; RC penalty windows are often ~60s on usage plans (see Developer Console → Rate limits). */
+    const fromHeader = retryAfterDelayMsFromHeaders(resp.headers);
+    const stagger = 1800 * (attempt + 1);
+    let waitMs = Math.max(stagger, fromHeader ?? 0, 55_000);
+    waitMs = Math.min(waitMs, 120_000);
     await sleepMs(waitMs);
   }
   throw new Error("rcSyncGet: exhausted retries without returning (bug).");
