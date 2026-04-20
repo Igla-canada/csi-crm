@@ -441,7 +441,7 @@ export function InboundCallHistoryTable({
   const urlDateFrom = searchParams.get("dateFrom") ?? "";
   const urlDateTo = searchParams.get("dateTo") ?? "";
 
-  const { liveUiSyncEnabled, activeCallPollSec, refreshIntervalSec, activeDockCalls } = useLiveUiSync();
+  const { activeCallPollSec, refreshIntervalSec, activeDockCalls } = useLiveUiSync();
   const [rows, setRows] = useState<InboundCallHistoryRowDto[]>(initialRows);
   const [dateFrom, setDateFrom] = useState(initialDateFrom || urlDateFrom);
   const [dateTo, setDateTo] = useState(initialDateTo || urlDateTo);
@@ -538,24 +538,23 @@ export function InboundCallHistoryTable({
 
   const dateFilterActive = Boolean(dateFrom.trim() || dateTo.trim());
 
+  // Call history polls independently of the header "Live sync" toggle (dock / router.refresh only).
   useEffect(() => {
-    if (!liveUiSyncEnabled) return;
     void fetchRows();
     const id = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void fetchRows();
     }, pollMs);
     return () => window.clearInterval(id);
-  }, [liveUiSyncEnabled, pollMs, fetchRows]);
+  }, [pollMs, fetchRows]);
 
   useEffect(() => {
-    if (!liveUiSyncEnabled) return;
     const onVis = () => {
       if (document.visibilityState === "visible") void fetchRows();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [liveUiSyncEnabled, fetchRows]);
+  }, [fetchRows]);
 
   useEffect(() => {
     const onExternal = () => void fetchRows();
