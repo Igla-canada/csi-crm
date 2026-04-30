@@ -96,6 +96,9 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
 
   const [calls, setCalls] = useState<ActiveDockCallSnapshot[]>([]);
   const [pollError, setPollError] = useState<string | null>(null);
+  /** Shown when the API returns a setup / degraded hint (webhook vs DB). */
+  const [listeningFootnote, setListeningFootnote] = useState<string | null>(null);
+  const [listeningFootnoteWarn, setListeningFootnoteWarn] = useState(false);
   const [opening, setOpening] = useState(false);
   const pollSeqRef = useRef(0);
   /** After RingCentral rate limits, multiply delay (1 → 2 → 4 … capped). Reset on success. */
@@ -143,6 +146,9 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
         upstreamStatus?: number;
         /** Server could not read extension active-calls (all legs rate-limited); empty list is not authoritative. */
         dockExtensionPollRateLimited?: boolean;
+        telephonyLiveSessionDbReadFailed?: boolean;
+        dockEmptyHint?: string;
+        skipExtensionActiveCallsPoll?: boolean;
       };
       try {
         data = (await res.json()) as typeof data;
@@ -200,6 +206,8 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
 
       pollBackoffMultRef.current = 1;
       setPollError(null);
+      setListeningFootnote(null);
+      setListeningFootnoteWarn(false);
       pruneStaleGraceDismissEntries(graceDismissedAtByKeyRef.current, Date.now());
       if (data.configured === false) {
         clearPostCallGraceTimer();
@@ -250,6 +258,25 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
           displayedCallsRef.current = [];
           setCalls([]);
         }
+      }
+
+      if (next.length === 0) {
+        const dbFail = data.telephonyLiveSessionDbReadFailed === true;
+        const hint =
+          typeof data.dockEmptyHint === "string" && data.dockEmptyHint.trim() ? data.dockEmptyHint.trim() : null;
+        if (dbFail) {
+          setPollError(
+            "Live dock cannot read TelephonyLiveSession from the database. Apply the TelephonyLiveSession Supabase migration (or check server logs). Webhooks cannot show until this succeeds.",
+          );
+        } else if (hint) {
+          setListeningFootnote(hint);
+          setListeningFootnoteWarn(false);
+        }
+      } else if (data.telephonyLiveSessionDbReadFailed === true) {
+        setListeningFootnote(
+          "Webhook mirror unavailable (database read failed); lines below are from extension poll only.",
+        );
+        setListeningFootnoteWarn(true);
       }
     } catch {
       if (seq !== pollSeqRef.current) return;
@@ -324,6 +351,8 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
       graceDismissedAtByKeyRef.current.clear();
       setCalls([]);
       setPollError(null);
+      setListeningFootnote(null);
+      setListeningFootnoteWarn(false);
       return;
     }
 
@@ -468,6 +497,19 @@ export function LiveCallDock({ onCallsSnapshotChange }: LiveCallDockProps) {
             ))}
           </ul>
         </div>
+      ) : null}
+
+      {listeningFootnote && !pollError ? (
+        <p
+          className={`pointer-events-auto max-w-[min(100vw-2rem,320px)] rounded-xl border px-3 py-2 text-left text-[10px] leading-snug shadow-md ring-1 ${
+            listeningFootnoteWarn
+              ? "border-amber-200/90 bg-amber-50/95 text-amber-950 ring-amber-900/10"
+              : "border-slate-200/90 bg-white/95 text-slate-800 ring-slate-900/5"
+          }`}
+          title={listeningFootnote}
+        >
+          {listeningFootnote.length > 280 ? `${listeningFootnote.slice(0, 280)}…` : listeningFootnote}
+        </p>
       ) : null}
     </div>
   );

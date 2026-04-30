@@ -77,6 +77,8 @@ export async function POST(req: NextRequest) {
         // Production: RingCentral reached us but parser found no sessions — check Vercel logs and telephony-debug.
         console.warn("[telephony-webhook] No session payloads parsed; keys:", keys.join(","), "snippet:", snippet);
       }
+    } else {
+      console.info(`[telephony-webhook] ok payloadsSeen=${payloadsSeen} processed=${processed}`);
     }
     return NextResponse.json(
       { ok: true, processed, payloadsSeen },

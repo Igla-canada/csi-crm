@@ -44,13 +44,13 @@ export async function GET() {
   }
 
   let webhookCalls: ExtensionActiveCallSummary[] = [];
+  let telephonyLiveSessionDbReadFailed = false;
   try {
     const rows = await listTelephonyLiveSessionsForDock();
     webhookCalls = telephonyLiveRowsToDockSummaries(rows);
   } catch (e) {
-    if (process.env.NODE_ENV === "development") {
-      console.warn("[active-calls] TelephonyLiveSession read failed (run DB migration?):", e);
-    }
+    telephonyLiveSessionDbReadFailed = true;
+    console.warn("[active-calls] TelephonyLiveSession read failed:", e);
   }
 
   const skipExtensionActiveCallsPoll = !isExtensionActiveCallsPollEnabled();
@@ -84,15 +84,20 @@ export async function GET() {
     ...(dockExtensionPollRateLimited ? { dockExtensionPollRateLimited: true as const } : {}),
   };
 
+  const dockDiagnostics = {
+    telephonyLiveSessionDbReadFailed,
+    webhookSessions: webhookCalls.length,
+    extensionPollSessions: pollCalls.length,
+    skipExtensionActiveCallsPoll,
+    ...extensionDiag,
+  };
+
   if (calls.length > 0) {
     return jsonPrivate({
       ok: true,
       configured: true,
       calls,
-      webhookSessions: webhookCalls.length,
-      extensionPollSessions: pollCalls.length,
-      skipExtensionActiveCallsPoll,
-      ...extensionDiag,
+      ...dockDiagnostics,
     });
   }
 
@@ -139,28 +144,36 @@ export async function GET() {
         configured: true,
         error,
         calls: [] as const,
-        skipExtensionActiveCallsPoll,
-        webhookSessions: webhookCalls.length,
-        extensionPollSessions: pollCalls.length,
-        ...extensionDiag,
+        ...dockDiagnostics,
         ...(upstreamStatus != null ? { upstreamStatus } : {}),
       },
       { status: httpStatus },
     );
   }
 
-  const emptyHint =
+  let emptyHint: string | null = null;
+  if (telephonyLiveSessionDbReadFailed) {
+    emptyHint = null;
+  } else if (skipExtensionActiveCallsPoll && webhookCalls.length === 0 && !dockExtensionPollRateLimited) {
+    emptyHint =
+      "Webhook-only mode: no TelephonyLiveSession rows. RingCentral must POST to /api/ringcentral/telephony-webhook — register in Workspace → RingCentral (Register listen-only telephony webhook). APP_URL on Vercel must be this deployment’s HTTPS origin. Admins: open GET /api/ringcentral/telephony-debug to compare subscription URL vs webhookExpectedAt. Optional: set RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=false to merge extension REST active-calls.";
+  } else if (
     extensionApiRecordCount === 0 &&
     webhookCalls.length === 0 &&
     !skipExtensionActiveCallsPoll &&
     !dockExtensionPollRateLimited
-      ? "RingCentral returned 0 extension active-call rows for this poll target. Either: (1) set RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID to the numeric extension id of the main line that receives calls (after carrier consolidation this is often one extension); (2) register account telephony webhooks so webhookSessions > 0; or (3) use a JWT for that same extension."
-      : extensionApiRecordCount != null &&
-          extensionApiRecordCount > 0 &&
-          pollCalls.length === 0 &&
-          !skipExtensionActiveCallsPoll
-        ? "RingCentral returned active-call rows but all were filtered as ended. If this still happens while a call is ringing, confirm RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID targets the ringing extension and share a redacted active-calls sample."
-        : null;
+  ) {
+    emptyHint =
+      "RingCentral returned 0 extension active-call rows for this poll target. Either: (1) set RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID to the numeric extension id of the main line that receives calls (after carrier consolidation this is often one extension); (2) register account telephony webhooks so webhookSessions > 0; or (3) use a JWT for that same extension.";
+  } else if (
+    extensionApiRecordCount != null &&
+    extensionApiRecordCount > 0 &&
+    pollCalls.length === 0 &&
+    !skipExtensionActiveCallsPoll
+  ) {
+    emptyHint =
+      "RingCentral returned active-call rows but all were filtered as ended. If this still happens while a call is ringing, confirm RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID targets the ringing extension and share a redacted active-calls sample.";
+  }
 
   // Merged calls are empty when webhook + extension poll yield none. If every extension leg was
   // rate-limited, fetch returns empty with dockExtensionPollRateLimited — the client must keep
@@ -169,13 +182,7 @@ export async function GET() {
     ok: true,
     configured: true,
     calls: [] as const,
-    webhookSessions: webhookCalls.length,
-    extensionPollSessions: pollCalls.length,
-    skipExtensionActiveCallsPoll,
-    extensionApiRecordCount,
-    extensionSkippedEnded,
-    extensionPollTarget,
-    ...(dockExtensionPollRateLimited ? { dockExtensionPollRateLimited: true as const } : {}),
+    ...dockDiagnostics,
     ...(emptyHint ? { dockEmptyHint: emptyHint } : {}),
   });
 }
