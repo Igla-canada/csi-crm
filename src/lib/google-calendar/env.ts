@@ -48,6 +48,7 @@ export function getGoogleCalendarIdFromEnv(): string | null {
   return c;
 }
 
+/** IANA zone for call-history calendar days and on-screen clocks. Eastern shops often use `America/Toronto` or `America/New_York`. */
 export function getAppTimezone(): string {
   return trimEnv("APP_TIMEZONE") || "America/Toronto";
 }

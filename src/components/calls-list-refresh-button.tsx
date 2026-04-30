@@ -12,6 +12,7 @@ export function CallsListRefreshButton() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
+  const [syncInfoWarn, setSyncInfoWarn] = useState(false);
 
   return (
     <div className="flex flex-col items-stretch gap-2 sm:items-end">
@@ -22,6 +23,7 @@ export function CallsListRefreshButton() {
           void (async () => {
             setError(null);
             setSyncInfo(null);
+            setSyncInfoWarn(false);
             setPending(true);
             try {
               const dateFrom = searchParams.get("dateFrom")?.trim() ?? "";
@@ -42,12 +44,19 @@ export function CallsListRefreshButton() {
                 setError(msg);
                 return;
               }
+              const fetched = typeof data?.fetched === "number" ? data.fetched : null;
+              const upserted = typeof data?.upserted === "number" ? data.upserted : null;
               const skipped = typeof data?.skipped === "number" ? data.skipped : 0;
+              const parts: string[] = [];
+              if (fetched != null) parts.push(`RingCentral returned ${fetched} voice row(s) in this window.`);
+              if (upserted != null) parts.push(`${upserted} saved to the CRM.`);
               if (skipped > 0) {
-                setSyncInfo(
-                  `Synced, but ${skipped} RingCentral row(s) were skipped. In DevTools → Network, open this response and inspect skippedSamples (RingCentral ids + reason).`,
+                parts.push(
+                  `${skipped} skipped — open this response in Network and inspect skippedSamples (id + reason).`,
                 );
               }
+              setSyncInfo(parts.join(" ") || "Sync completed.");
+              setSyncInfoWarn(skipped > 0);
               window.dispatchEvent(new Event(INBOUND_CALL_HISTORY_REFRESH_EVENT));
               router.refresh();
             } catch {
@@ -66,7 +75,10 @@ export function CallsListRefreshButton() {
           {error}
         </p>
       ) : syncInfo ? (
-        <p className="max-w-[280px] text-right text-[11px] leading-snug text-amber-800" role="status">
+        <p
+          className={`max-w-[320px] text-right text-[11px] leading-snug ${syncInfoWarn ? "text-amber-800" : "text-slate-600"}`}
+          role="status"
+        >
           {syncInfo}
         </p>
       ) : (

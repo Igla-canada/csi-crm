@@ -69,10 +69,36 @@ function InboundCallTypeIcon({
   );
 }
 
-function formatWhenInShopTz(iso: string, timeZone: string) {
+function formatWhenInShopTz(iso: string, timeZone: string): string {
   const d = parseISO(iso);
-  const z = new TZDate(d.getTime(), timeZone);
-  return format(z, "MMM d, yyyy · h:mm a");
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZoneName: "short",
+    }).format(d);
+  } catch {
+    return format(new TZDate(d.getTime(), timeZone), "MMM d, yyyy · h:mm a");
+  }
+}
+
+/** Short label for the "When" column header (matches APP_TIMEZONE / filter presets). */
+function shopTimeColumnTitle(iana: string): string {
+  const eastern = new Set([
+    "America/Toronto",
+    "America/New_York",
+    "America/Detroit",
+    "America/Indiana/Indianapolis",
+    "US/Eastern",
+  ]);
+  if (eastern.has(iana)) return "When (ET)";
+  return `When (${iana.replace(/^.*\//, "")})`;
 }
 
 function InboundHistorySummaryHoverTip({
@@ -634,7 +660,7 @@ export function InboundCallHistoryTable({
             <th className="w-10 py-3 pr-2 text-center" scope="col">
               <span className="sr-only">Call type</span>
             </th>
-            <th className="py-3 pr-4">When</th>
+            <th className="py-3 pr-4">{shopTimeColumnTitle(dateFilterTimezone)}</th>
             <th className="py-3 pr-3">Result</th>
             <th className="py-3 pr-3">Length</th>
             <th className="py-3 pr-3">Rec</th>
@@ -832,9 +858,10 @@ function DateFilterBar({
           </button>
         ) : null}
       </div>
-      <p className="text-[11px] leading-snug text-slate-500 sm:ml-auto sm:max-w-[280px] sm:text-right">
+      <p className="text-[11px] leading-snug text-slate-500 sm:ml-auto sm:max-w-[320px] sm:text-right">
         Presets use calendar days in <span className="font-medium text-slate-600">{timezoneLabel}</span>, ending today.
-        Choose Custom to pick exact From/To dates. Latest calls leaves the range open (default list).
+        The table &quot;When&quot; column is that same zone with an abbreviation (e.g. EDT, not UTC). Choose Custom for
+        exact From/To dates. Latest calls leaves the range open (default list).
       </p>
     </div>
   );
