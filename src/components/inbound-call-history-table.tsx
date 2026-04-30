@@ -599,6 +599,13 @@ export function InboundCallHistoryTable({
           <span className="text-slate-400"> · </span>
           {dateFilterActive ? "No calls in this range." : "No calls on file yet."}
         </p>
+        {dateFilterActive ? (
+          <p className="max-w-2xl text-sm leading-relaxed text-slate-500">
+            If your phone admin portal shows calls for these days but this list is empty, the CRM database may not have
+            imported them yet. Use <span className="font-medium text-slate-700">Refresh list</span> above to pull from
+            RingCentral, or confirm telephony webhooks are registered for this site&apos;s URL.
+          </p>
+        ) : null}
       </div>
     );
   }

@@ -274,12 +274,44 @@ function payloadsWithEventSessionFallback(envelope: unknown, extracted: SessionP
   return [{ sessionId: eventSid, parties, webhookStubHappenedAt: webhookStubHappenedAtFromBody(b, parties) }];
 }
 
+/** Prefer legs we can show a real PSTN number for; ties favor outbound (mirrors often look inbound). */
+function displayPartyDockScore(p: RcParty): number {
+  const dir = String(p.direction ?? "").toLowerCase();
+  const direction = dir.includes("outbound") ? CallDirection.OUTBOUND : CallDirection.INBOUND;
+  const got = pickCustomerPhoneFromRcFromTo(direction, p.from, p.to);
+  if (!got) return 0;
+  if (got.callLog10) return 5;
+  if (got.digits.length >= MIN_DIGITS_LOOKUP) return 3;
+  return 1;
+}
+
+/**
+ * Pick one party row for the live dock. Pure "inbound first" hid outbound (mirror inbound leg won).
+ * Pure "outbound first" hid inbound when both legs were active. Score dialable customer digits, then
+ * tie-break toward outbound; if no digits yet (early ring), fall back to inbound first.
+ */
 function pickDisplayParty(parties: RcParty[]): RcParty | null {
   const active = parties.filter((p) => !isPartyEnded(p));
   if (!active.length) return null;
-  const inbound = active.find((p) => String(p.direction ?? "").toLowerCase().includes("inbound"));
-  if (inbound) return inbound;
-  return active[0] ?? null;
+
+  let best: RcParty | null = null;
+  let bestScore = -1;
+  for (const p of active) {
+    const s = displayPartyDockScore(p);
+    if (s > bestScore) {
+      bestScore = s;
+      best = p;
+    } else if (s === bestScore && s > 0 && best) {
+      const pOut = String(p.direction ?? "").toLowerCase().includes("outbound");
+      const bOut = String(best.direction ?? "").toLowerCase().includes("outbound");
+      if (pOut && !bOut) best = p;
+    }
+  }
+  if (best && bestScore > 0) return best;
+
+  const inboundFirst = active.find((p) => String(p.direction ?? "").toLowerCase().includes("inbound"));
+  const outboundFirst = active.find((p) => String(p.direction ?? "").toLowerCase().includes("outbound"));
+  return inboundFirst ?? outboundFirst ?? active[0] ?? null;
 }
 
 function customerFromParty(p: RcParty): {

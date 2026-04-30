@@ -71,7 +71,7 @@ export default async function CallHistoryPage({
       <SectionHeading
         eyebrow="Calls"
         title="Call history"
-        text="Inbound and outbound calls, newest first. The first column icons mean: green incoming, amber outgoing, red missed / voicemail / no answer (from the carrier result). With Live sync on, this list re-fetches from the database on the same interval as the header. Refresh list pulls RingCentral for the selected range (or up to the last 7 days when no range), then reloads. TELUS detailed logs may list each leg separately; we show one row per RingCentral call, with result, length, and recording count when the platform provides them. Open log works for both directions and completes the telephony stub on the client card."
+        text="Inbound and outbound calls, newest first. This page shows rows already stored in the CRM database. Live sync only re-fetches that stored data on an interval (and drives the live dock); it does not import calls from TELUS or RingCentral by itself. To load carrier activity into the CRM, use Refresh list (RingCentral voice API for the current date range, or the last 7 days on Latest calls) and/or register account telephony webhooks pointing at this deployment. Column icons: green incoming, amber outgoing, red missed / voicemail / no answer. TELUS detailed logs may list each leg separately; we show one row per RingCentral call. Open log completes the telephony stub on the client card."
         aside={
           <Suspense
             fallback={

@@ -154,12 +154,12 @@ export async function GET() {
     webhookCalls.length === 0 &&
     !skipExtensionActiveCallsPoll &&
     !dockExtensionPollRateLimited
-      ? "RingCentral returned 0 extension active-call rows for this poll target. Either: (1) set RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID in .env to the numeric extension id of the line that actually rings (Admin → Users → extension id), restart dev; (2) register account telephony webhooks so webhookSessions > 0; or (3) use a JWT for the same extension that receives calls."
+      ? "RingCentral returned 0 extension active-call rows for this poll target. Either: (1) set RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID to the numeric extension id of the main line that receives calls (after carrier consolidation this is often one extension); (2) register account telephony webhooks so webhookSessions > 0; or (3) use a JWT for that same extension."
       : extensionApiRecordCount != null &&
           extensionApiRecordCount > 0 &&
           pollCalls.length === 0 &&
           !skipExtensionActiveCallsPoll
-        ? "RingCentral returned active-call rows but all were filtered (e.g. ended status). If this persists during a live call, share a redacted API sample."
+        ? "RingCentral returned active-call rows but all were filtered as ended. If this still happens while a call is ringing, confirm RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID targets the ringing extension and share a redacted active-calls sample."
         : null;
 
   // Merged calls are empty when webhook + extension poll yield none. If every extension leg was

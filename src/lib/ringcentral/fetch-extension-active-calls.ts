@@ -38,6 +38,7 @@ function telephonyStatusLooksEnded(raw: string | undefined): boolean {
     .trim();
   if (!s) return false;
   const compact = s.replace(/\s+/g, "");
+  // Omit "missed": hunt/forward legs could show Missed while the answered line is still active.
   return (
     compact === "gone" ||
     compact === "nocall" ||
@@ -48,8 +49,7 @@ function telephonyStatusLooksEnded(raw: string | undefined): boolean {
     /\bhangup/.test(compact) ||
     /\bterminated/.test(s) ||
     /\bvoice\s*mail\b/.test(s) ||
-    /\bvoicemail\b/.test(s) ||
-    /\bmissed\b/.test(s)
+    /\bvoicemail\b/.test(s)
   );
 }
 
@@ -65,7 +65,14 @@ function mapDirection(raw: string | undefined): CallDirection | null {
 }
 
 function directionForRecord(rec: RcActiveRecord): CallDirection {
-  return mapDirection(rec.direction) ?? CallDirection.INBOUND;
+  const mapped = mapDirection(rec.direction);
+  if (mapped) return mapped;
+  // RC often omits `direction` on active-call rows; infer from which side yields a PSTN customer pick.
+  const asOut = pickCustomerPhoneFromRcFromTo(CallDirection.OUTBOUND, rec.from, rec.to);
+  const asIn = pickCustomerPhoneFromRcFromTo(CallDirection.INBOUND, rec.from, rec.to);
+  if (asIn && !asOut) return CallDirection.INBOUND;
+  if (asOut && !asIn) return CallDirection.OUTBOUND;
+  return CallDirection.INBOUND;
 }
 
 function pickCustomerParty(

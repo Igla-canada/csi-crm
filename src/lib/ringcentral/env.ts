@@ -69,7 +69,7 @@ function parseExtensionIdsFromEnv(): string[] {
 /**
  * One or more `GET …/extension/{id}/active-calls` plus optional JWT default.
  * - No env: only `…/extension/~/active-calls` (JWT’s extension).
- * - `RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID` or `RINGCENTRAL_ACTIVE_CALLS_EXTENSION_IDS`: comma/space/semicolon-separated **numeric ids** from GET /account/~/extension. Each id is polled and results are merged for the live dock.
+ * - `RINGCENTRAL_ACTIVE_CALLS_EXTENSION_ID` or `RINGCENTRAL_ACTIVE_CALLS_EXTENSION_IDS`: comma/space/semicolon-separated **numeric ids** from GET /account/~/extension (the extension that actually rings — after TELUS/RC “all ext → one number” this is usually that single line). Each id is polled and results are merged for the live dock.
  */
 const JWT_ACTIVE_CALLS_PATH = "/restapi/v1.0/account/~/extension/~/active-calls";
 
