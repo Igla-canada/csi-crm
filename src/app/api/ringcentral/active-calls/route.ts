@@ -154,9 +154,6 @@ export async function GET() {
   let emptyHint: string | null = null;
   if (telephonyLiveSessionDbReadFailed) {
     emptyHint = null;
-  } else if (skipExtensionActiveCallsPoll && webhookCalls.length === 0 && !dockExtensionPollRateLimited) {
-    emptyHint =
-      "Webhook-only mode: no TelephonyLiveSession rows. RingCentral must POST to /api/ringcentral/telephony-webhook — register in Workspace → RingCentral (Register listen-only telephony webhook). APP_URL on Vercel must be this deployment’s HTTPS origin. Admins: open GET /api/ringcentral/telephony-debug to compare subscription URL vs webhookExpectedAt. Optional: set RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=false to merge extension REST active-calls.";
   } else if (
     extensionApiRecordCount === 0 &&
     webhookCalls.length === 0 &&
