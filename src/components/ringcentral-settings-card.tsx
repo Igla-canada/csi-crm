@@ -114,8 +114,11 @@ export function RingCentralSettingsCard({ canConfigure, configured }: Props) {
         account (not only the JWT extension).{" "}
         <span className="font-medium">APP_URL</span> must be a public HTTPS base (ngrok is fine). After migration{" "}
         <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">TelephonyLiveSession</code>, use the button below once
-        (or after each ngrok URL change). Multiple simultaneous calls show as multiple lines. Extension REST polling is
-        off by default; set{" "}
+        (or after each ngrok URL change). On Vercel, <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">CRON_SECRET</code>{" "}
+        enables a daily job (<code className="rounded bg-slate-100 px-1 py-0.5 text-xs">GET /api/ringcentral/telephony-subscribe-cron</code>
+        ) that renews or recreates this subscription before it expires — same secret as call-log{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">sync-cron</code>. Multiple simultaneous calls show as
+        multiple lines. Extension REST polling is off by default; set{" "}
         <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">RINGCENTRAL_SKIP_EXTENSION_ACTIVE_CALLS=false</code>{" "}
         only if you need active-calls merged from RingCentral’s API.
       </p>

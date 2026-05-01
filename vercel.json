@@ -3,6 +3,10 @@
     {
       "path": "/api/ringcentral/recording-enrichment-cron",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/ringcentral/telephony-subscribe-cron",
+      "schedule": "15 6 * * *"
     }
   ]
 }
