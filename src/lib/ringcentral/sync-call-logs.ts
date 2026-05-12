@@ -1825,8 +1825,8 @@ async function tryImportRingCentralSessionRowsForStub(
       { directionContextRecords: siblings, directionFallback: stub.direction },
     );
     if (!imported) continue;
-    await deleteCallLogWebhookTelephonyPlaceholder(stub.telephonySessionId);
     const { callLogId } = await upsertCallLogFromRingCentralImport(imported, integrationUserId);
+    await deleteCallLogWebhookTelephonyPlaceholder(stub.telephonySessionId);
     return { imported, callLogId };
   }
   return null;
@@ -1838,9 +1838,19 @@ export type TelephonySessionEndImportOutcome = {
   missingRecording: boolean;
 };
 
+function scheduleImmediateCallLogRecordingBackfill(callLogId: string): void {
+  void syncSingleRingCentralCallLogByCrmId(callLogId).catch((e) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[telephony-session-end] immediate RC backfill failed for ${callLogId}:`, msg);
+  });
+}
+
 /**
  * When a telephony session ends (webhook), try to import the matching account call-log row immediately.
  * If RingCentral has not published it yet, writes a `webhook-ts:{session}` placeholder (same path as full sync).
+ *
+ * On any failure after matching RC rows, still upserts the placeholder so call history does not “vanish”
+ * when the live dock row is cleared after the grace window.
  */
 export async function importCallLogForTelephonySessionEnd(
   stub: TelephonyWebhookSessionStubInput,
@@ -1855,45 +1865,62 @@ export async function importCallLogForTelephonySessionEnd(
     return null;
   }
 
-  const platform = await getRingCentralPlatform();
-  const dateTo = new Date();
-  const dateFrom = subHours(dateTo, TELEPHONY_END_IMPORT_HOURS_BACK);
+  const runImport = async (): Promise<TelephonySessionEndImportOutcome> => {
+    const platform = await getRingCentralPlatform();
+    const dateTo = new Date();
+    const dateFrom = subHours(dateTo, TELEPHONY_END_IMPORT_HOURS_BACK);
 
-  /** Do not filter by direction: inbound sessions still emit outbound legs (FindMe, park) that carry recordings. */
-  const matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
-    platform,
-    sessionId,
-    dateFrom,
-    dateTo,
-    undefined,
-    TELEPHONY_END_IMPORT_MAX_PAGES,
-  );
+    /** Do not filter by direction: inbound sessions still emit outbound legs (FindMe, park) that carry recordings. */
+    const matchedList = await loadAccountCallLogRecordsMatchingTelephonySessionInWindow(
+      platform,
+      sessionId,
+      dateFrom,
+      dateTo,
+      undefined,
+      TELEPHONY_END_IMPORT_MAX_PAGES,
+    );
 
-  const hit = await tryImportRingCentralSessionRowsForStub(
-    platform,
-    matchedList,
-    stub,
-    env.integrationUserId,
-    dateFrom,
-    dateTo,
-  );
-  if (hit) {
-    const autoTx = getRingCentralAutoTranscribe();
-    if (autoTx && hit.imported.recording?.contentUri) {
-      try {
-        if (await shouldStartAutoTranscriptionForCallLog(hit.callLogId)) {
-          await startRingCentralSpeechToTextForCallLog(hit.callLogId);
+    const hit = await tryImportRingCentralSessionRowsForStub(
+      platform,
+      matchedList,
+      stub,
+      env.integrationUserId,
+      dateFrom,
+      dateTo,
+    );
+    if (hit) {
+      const autoTx = getRingCentralAutoTranscribe();
+      if (autoTx && hit.imported.recording?.contentUri) {
+        try {
+          if (await shouldStartAutoTranscriptionForCallLog(hit.callLogId)) {
+            await startRingCentralSpeechToTextForCallLog(hit.callLogId);
+          }
+        } catch {
+          /* non-fatal */
         }
-      } catch {
-        /* non-fatal */
       }
+      const missingRecording = !Boolean(String(hit.imported.recording?.contentUri ?? "").trim());
+      if (missingRecording) {
+        scheduleImmediateCallLogRecordingBackfill(hit.callLogId);
+      }
+      return {
+        callLogId: hit.callLogId,
+        missingRecording,
+      };
     }
-    return {
-      callLogId: hit.callLogId,
-      missingRecording: !Boolean(String(hit.imported.recording?.contentUri ?? "").trim()),
-    };
-  }
 
-  const { callLogId } = await upsertCallLogFromTelephonyWebhookStub(stub, env.integrationUserId);
-  return { callLogId, missingRecording: true };
+    const { callLogId } = await upsertCallLogFromTelephonyWebhookStub(stub, env.integrationUserId);
+    scheduleImmediateCallLogRecordingBackfill(callLogId);
+    return { callLogId, missingRecording: true };
+  };
+
+  try {
+    return await runImport();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[telephony-session-end] importCallLogForTelephonySessionEnd failed; persisting placeholder:", msg);
+    const { callLogId } = await upsertCallLogFromTelephonyWebhookStub(stub, env.integrationUserId);
+    scheduleImmediateCallLogRecordingBackfill(callLogId);
+    return { callLogId, missingRecording: true };
+  }
 }

@@ -447,13 +447,13 @@ export async function applyRingCentralTelephonyWebhookBody(
       };
       const graceMs = getTelephonySessionEndGraceMs();
       if (graceMs <= 0) {
-        await deleteTelephonyLiveSession(payload.sessionId);
         try {
           await importCallLogForTelephonySessionEnd(stub);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.warn("[telephony-webhook] importCallLogForTelephonySessionEnd failed:", msg);
         }
+        await deleteTelephonyLiveSession(payload.sessionId);
       } else {
         const token = randomUUID();
         const graceUntil = new Date(Date.now() + graceMs).toISOString();

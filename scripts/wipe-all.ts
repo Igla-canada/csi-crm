@@ -31,13 +31,20 @@ async function clearEverything(supabase: SupabaseClient) {
   };
   await wipeId(T.ImportRow);
   await wipeId(T.ImportBatch);
+  await wipeId(T.PaymentEvent);
   await wipeId(T.Appointment);
+  const { error: ctoDel } = await supabase.from(T.CalendarTagOption).delete().neq("code", "");
+  if (ctoDel) throw ctoDel;
   const { error: btoDel } = await supabase.from(T.BookingTypeOption).delete().neq("code", "");
   if (btoDel) throw btoDel;
   const { error: psDel } = await supabase.from(T.ProductServiceOption).delete().neq("code", "");
   if (psDel) throw psDel;
+  const { error: lsoDel } = await supabase.from(T.LeadSourceOption).delete().neq("code", "");
+  if (lsoDel) throw lsoDel;
   await wipeId(T.Opportunity);
   await wipeId(T.CallLog);
+  const { error: tlsDel } = await supabase.from(T.TelephonyLiveSession).delete().neq("telephonySessionId", "");
+  if (tlsDel) throw tlsDel;
   await wipeId(T.AuditLog);
   await wipeId(T.ContactPoint);
   await wipeId(T.Vehicle);
@@ -49,6 +56,14 @@ async function clearEverything(supabase: SupabaseClient) {
 }
 
 async function insertWorkspaceDefaults(supabase: SupabaseClient) {
+  const { error: tagErr } = await supabase.from(T.CalendarTagOption).insert([
+    { code: "DEFAULT", label: "Default", googleColorId: "1", accentHex: null, sortOrder: 0, active: true, createdAt: now() },
+    { code: "DEPOSIT", label: "Deposit taken", googleColorId: "10", accentHex: "#0f9d58", sortOrder: 10, active: true, createdAt: now() },
+    { code: "FOLLOWUP", label: "Needs follow-up", googleColorId: "6", accentHex: "#f4511e", sortOrder: 20, active: true, createdAt: now() },
+    { code: "CONFIRMED", label: "Confirmed", googleColorId: "9", accentHex: "#039be5", sortOrder: 30, active: true, createdAt: now() },
+  ]);
+  if (tagErr) throw tagErr;
+
   const { error: optErr } = await supabase.from(T.CallResultOption).insert([
     { code: "QUOTE_SENT", label: "Quote sent", sortOrder: 10, isBuiltIn: true, active: true, accentKey: "sky", accentHex: null, createdAt: now() },
     { code: "CALLBACK_NEEDED", label: "Callback needed", sortOrder: 20, isBuiltIn: true, active: true, accentKey: "amber", accentHex: null, createdAt: now() },
@@ -76,6 +91,17 @@ async function insertWorkspaceDefaults(supabase: SupabaseClient) {
     { code: "DASH_CAM", label: "Dash cam", matchTerms: "dash cam,dashcam,dash-cam", sortOrder: 15, isBuiltIn: false, active: true, createdAt: now() },
   ]);
   if (psErr) throw psErr;
+
+  const { error: lsErr } = await supabase.from(T.LeadSourceOption).insert([
+    { code: "GOOGLE", label: "Google", sortOrder: 10, isBuiltIn: true, active: true, createdAt: now() },
+    { code: "REFERRAL", label: "Referral", sortOrder: 20, isBuiltIn: true, active: true, createdAt: now() },
+    { code: "WALK_IN", label: "Walk-in", sortOrder: 30, isBuiltIn: true, active: true, createdAt: now() },
+    { code: "WEBSITE", label: "Website", sortOrder: 40, isBuiltIn: true, active: true, createdAt: now() },
+    { code: "SOCIAL", label: "Social media", sortOrder: 50, isBuiltIn: true, active: true, createdAt: now() },
+    { code: "BOOKING", label: "Booking / calendar", sortOrder: 55, isBuiltIn: true, active: true, createdAt: now() },
+    { code: "OTHER", label: "Other", sortOrder: 60, isBuiltIn: true, active: true, createdAt: now() },
+  ]);
+  if (lsErr) throw lsErr;
 
   const { error: calErr } = await supabase.from(T.CalendarConfig).insert({
     id: id(),
